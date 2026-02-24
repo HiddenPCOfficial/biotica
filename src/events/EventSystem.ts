@@ -1,7 +1,6 @@
 import type { SeededRng } from '../core/SeededRng'
-import { TileId } from '../game/enums/TileId'
 import type { RecentEventEntry, WorldState } from '../world/WorldState'
-import { pushRecentEvent, worldIndex } from '../world/WorldState'
+import { pushRecentEvent } from '../world/WorldState'
 import type { ActiveEvent, AtmosphereOverlay, EventKind, EventStepResult } from './EventTypes'
 import { createDroughtEvent, stepDrought } from './events/Drought'
 import { createEarthquakeEvent, stepEarthquake } from './events/Earthquake'
@@ -12,21 +11,25 @@ import {
   stepHeatWave,
 } from './events/HeatWave'
 import { createRainStormEvent, stepRainStorm } from './events/RainStorm'
-import { createVolcanoEruptionEvent, stepVolcanoEruption } from './events/VolcanoEruption'
+import { stepVolcanoEruption } from './events/VolcanoEruption'
 
 type EventSystemOptions = {
   spawnCooldownTicks?: number
   maxActiveEvents?: number
 }
 
+export type EventSystemState = {
+  activeEvents: ActiveEvent[]
+  recentEvents: RecentEventEntry[]
+  eventCounter: number
+  lastSpawnTick: number
+  eventRateMultiplier: number
+}
+
 function clamp01(value: number): number {
   if (value < 0) return 0
   if (value > 1) return 1
   return value
-}
-
-function isMountainLike(tile: TileId): boolean {
-  return tile === TileId.Mountain || tile === TileId.Hills || tile === TileId.Snow || tile === TileId.Rock
 }
 
 /**
@@ -134,6 +137,39 @@ export class EventSystem {
     this.eventRateMultiplier = Math.max(0, Math.min(5, value))
   }
 
+  exportState(): EventSystemState {
+    return {
+      activeEvents: this.activeEvents.map((event) => ({ ...event })),
+      recentEvents: this.recentEvents.map((event) => ({ ...event })),
+      eventCounter: this.eventCounter,
+      lastSpawnTick: this.lastSpawnTick,
+      eventRateMultiplier: this.eventRateMultiplier,
+    }
+  }
+
+  hydrateState(state: EventSystemState): void {
+    this.activeEvents.length = 0
+    this.recentEvents.length = 0
+
+    const active = Array.isArray(state.activeEvents) ? state.activeEvents : []
+    for (let i = 0; i < active.length; i++) {
+      const event = active[i]
+      if (!event) continue
+      this.activeEvents.push({ ...event })
+    }
+
+    const recent = Array.isArray(state.recentEvents) ? state.recentEvents : []
+    for (let i = 0; i < recent.length; i++) {
+      const row = recent[i]
+      if (!row) continue
+      this.recentEvents.push({ ...row })
+    }
+
+    this.eventCounter = Math.max(0, state.eventCounter | 0)
+    this.lastSpawnTick = state.lastSpawnTick | 0
+    this.eventRateMultiplier = Math.max(0, Math.min(5, Number(state.eventRateMultiplier) || 0))
+  }
+
   private trySpawn(world: WorldState, rng: SeededRng, tick: number): void {
     if (this.activeEvents.length >= this.maxActiveEvents) {
       return
@@ -182,9 +218,8 @@ export class EventSystem {
     const heatWeight = 0.16
     const coldWeight = 0.14
     const quakeWeight = 0.16
-    const volcanoWeight = 0.08
     const total =
-      rainWeight + droughtWeight + heatWeight + coldWeight + quakeWeight + volcanoWeight
+      rainWeight + droughtWeight + heatWeight + coldWeight + quakeWeight
 
     let cursor = (roll * total) / Math.max(1e-6, total)
     if ((cursor -= rainWeight) <= 0) return 'RainStorm'
@@ -192,7 +227,7 @@ export class EventSystem {
     if ((cursor -= heatWeight) <= 0) return 'HeatWave'
     if ((cursor -= coldWeight) <= 0) return 'ColdSnap'
     if ((cursor -= quakeWeight) <= 0) return 'Earthquake'
-    return 'VolcanoEruption'
+    return 'Earthquake'
   }
 
   private createEvent(kind: EventKind, world: WorldState, rng: SeededRng, tick: number): ActiveEvent | null {
@@ -276,34 +311,6 @@ export class EventSystem {
       })
     }
 
-    // Volcano: richiede area montuosa.
-    const crater = this.findMountainPoint(world, rng)
-    if (!crater) {
-      return null
-    }
-
-    return createVolcanoEruptionEvent({
-      id,
-      seed,
-      tick,
-      x: crater.x,
-      y: crater.y,
-      eruptionTicks: rng.rangeInt(55, 110),
-      coolingTicks: rng.rangeInt(120, 200),
-      maxLavaTiles: rng.rangeInt(140, 360),
-    })
-  }
-
-  private findMountainPoint(world: WorldState, rng: SeededRng): { x: number; y: number } | null {
-    const attempts = 280
-    for (let i = 0; i < attempts; i++) {
-      const x = rng.nextInt(world.width)
-      const y = rng.nextInt(world.height)
-      const tile = world.tiles[worldIndex(world, x, y)] as TileId
-      if (isMountainLike(tile)) {
-        return { x, y }
-      }
-    }
     return null
   }
 }

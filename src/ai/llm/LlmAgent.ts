@@ -23,6 +23,7 @@ export class LlmAgent {
     const client = new LlmClient({
       provider: coreConfig.llm.provider,
       baseUrl: coreConfig.llm.baseUrl,
+      apiKey: coreConfig.llm.apiKey,
       timeoutMs: coreConfig.llm.timeoutMs,
     })
 

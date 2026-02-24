@@ -11,6 +11,7 @@ import type {
   FactionSummary,
   Note,
   ReligionSummary,
+  Structure,
   TerritorySummary,
 } from '../../civ/types'
 import type { SpeciesStat } from '../../creatures/types'
@@ -22,11 +23,18 @@ import type {
   AlertItem,
   DataPoint,
   EventCard,
+  MaterialCatalogRow,
   NamedSeriesPoint,
   OverlayToggles,
+  ResourceNodeDensity,
+  ResourceNodeRow,
   SelectedAgentSummary,
   SimulationSnapshot,
+  SelectedStructureSummary,
+  StructureCatalogRow,
+  StructureWorldRow,
   TopSpeciesItem,
+  VolcanoSummary,
 } from './types'
 
 export type SnapshotBuildInput = {
@@ -49,7 +57,15 @@ export type SnapshotBuildInput = {
   civDialogues?: readonly DialogueRecord[]
   civMetrics?: readonly CivMetricsPoint[]
   civItems?: CivItemsSnapshot | null
+  materialsCatalog?: MaterialCatalogRow[]
+  resourceNodeDensity?: ResourceNodeDensity | null
+  resourceNodeRows?: ResourceNodeRow[]
+  structureCatalog?: StructureCatalogRow[]
+  structureWorldRows?: StructureWorldRow[]
+  selectedStructure?: SelectedStructureSummary | null
+  volcanoSummary?: VolcanoSummary | null
   civMembers?: readonly FactionMemberSummary[]
+  civStructures?: readonly Structure[]
   civTerritories?: TerritorySummary | null
   civNotes?: readonly Note[]
   civRelations?: readonly FactionRelationSummary[]
@@ -418,8 +434,20 @@ export class UISnapshotBuilder {
           factionId: input.selectedAgent.factionId,
           factionName: input.selectedAgent.factionName,
           role: input.selectedAgent.role,
+          currentIntent: input.selectedAgent.currentIntent,
           goal: input.selectedAgent.goal,
           activityState: input.selectedAgent.activityState,
+          lastAction: input.selectedAgent.lastAction,
+          proposedPlan: input.selectedAgent.proposedPlan
+            ? {
+                ...input.selectedAgent.proposedPlan,
+              }
+            : null,
+          activePlan: input.selectedAgent.activePlan
+            ? {
+                ...input.selectedAgent.activePlan,
+              }
+            : null,
           energy: input.selectedAgent.energy,
           hydration: input.selectedAgent.hydration,
           age: input.selectedAgent.age,
@@ -452,6 +480,12 @@ export class UISnapshotBuilder {
             ...input.selectedAgent.mentalState,
             lastReasonCodes: [...input.selectedAgent.mentalState.lastReasonCodes],
           },
+          latestMentalLog: input.selectedAgent.latestMentalLog
+            ? {
+                ...input.selectedAgent.latestMentalLog,
+                reasonCodes: [...input.selectedAgent.latestMentalLog.reasonCodes],
+              }
+            : undefined,
           utteranceTokens: [...input.selectedAgent.lastUtteranceTokens],
           utteranceGloss: input.selectedAgent.lastUtteranceGloss,
           thoughtGloss: input.selectedAgent.thoughtGloss,
@@ -557,54 +591,170 @@ export class UISnapshotBuilder {
 
   private buildItemsSummary(input: SnapshotBuildInput): SimulationSnapshot['items'] {
     const items = input.civItems
-    if (!items) {
+    const materialsCatalog = (input.materialsCatalog ?? []).map((row) => ({
+      id: row.id,
+      category: row.category,
+      hardness: row.hardness,
+      heatResistance: row.heatResistance,
+      lavaResistance: row.lavaResistance,
+      hazardResistance: row.hazardResistance,
+      rarity: row.rarity,
+      allowedBiomes: [...row.allowedBiomes],
+    }))
+    const resourcesDensity = input.resourceNodeDensity
+      ? { ...input.resourceNodeDensity }
+      : {
+          totalNodes: 0,
+          treeNodes: 0,
+          stoneNodes: 0,
+          ironNodes: 0,
+          clayNodes: 0,
+          totalRemainingAmount: 0,
+        }
+    const resourceNodes = (input.resourceNodeRows ?? []).map((row) => ({
+      id: row.id,
+      type: row.type,
+      x: row.x,
+      y: row.y,
+      amount: row.amount,
+      regenRate: row.regenRate,
+      requiredToolTag: row.requiredToolTag,
+      yieldsMaterialId: row.yieldsMaterialId,
+    }))
+    const structuresCatalog = (input.structureCatalog ?? []).map((row) => ({
+      id: row.id,
+      name: row.name,
+      size: { ...row.size },
+      requiredTechLevel: row.requiredTechLevel,
+      buildCost: row.buildCost.map((cost) => ({ ...cost })),
+      utilityTags: [...row.utilityTags],
+      heatResistance: row.heatResistance,
+      lavaResistance: row.lavaResistance,
+      hazardResistance: row.hazardResistance,
+    }))
+    const structuresWorld = (input.structureWorldRows ?? []).map((row) => ({
+      id: row.id,
+      defId: row.defId,
+      name: row.name,
+      factionId: row.factionId,
+      x: row.x,
+      y: row.y,
+      w: row.w,
+      h: row.h,
+      state: row.state,
+      hp: row.hp,
+      maxHp: row.maxHp,
+      builtAtTick: row.builtAtTick,
+    }))
+    const selectedStructure = input.selectedStructure
+      ? {
+          ...input.selectedStructure,
+          utilityTags: [...input.selectedStructure.utilityTags],
+          buildCost: input.selectedStructure.buildCost.map((row) => ({ ...row })),
+        }
+      : null
+    const volcano = input.volcanoSummary ? { ...input.volcanoSummary } : null
+
+    if (
+      !items &&
+      materialsCatalog.length === 0 &&
+      structuresCatalog.length === 0 &&
+      resourceNodes.length === 0 &&
+      structuresWorld.length === 0
+    ) {
       return null
     }
 
+    const factionTechLevel = items?.selectedFactionTechLevel ?? 0
+    const materialInventory = new Map<string, number>()
+    if (items) {
+      for (let i = 0; i < items.factionInventory.length; i++) {
+        const row = items.factionInventory[i]
+        if (!row) continue
+        materialInventory.set(row.itemId, (materialInventory.get(row.itemId) ?? 0) + row.quantity)
+      }
+    }
+
+    const structuresBuildable = structuresCatalog.map((structure) => {
+      const unlocked = factionTechLevel >= structure.requiredTechLevel
+      const missingMaterials: string[] = []
+      for (let i = 0; i < structure.buildCost.length; i++) {
+        const cost = structure.buildCost[i]
+        if (!cost) continue
+        const available = materialInventory.get(cost.materialId) ?? 0
+        if (available < cost.amount) {
+          missingMaterials.push(`${cost.materialId}:${Math.max(0, cost.amount - available).toFixed(0)}`)
+        }
+      }
+      return {
+        id: structure.id,
+        name: structure.name,
+        requiredTechLevel: structure.requiredTechLevel,
+        unlocked,
+        missingMaterials,
+      }
+    })
+
     return {
-      catalogSeed: items.catalogSeed,
-      catalogCreatedAtMs: items.catalogCreatedAtMs,
-      selectedFactionId: items.selectedFactionId,
-      selectedFactionName: items.selectedFactionName,
-      selectedFactionTechLevel: items.selectedFactionTechLevel,
-      catalog: items.catalog.map((item) => ({
-        id: item.id,
-        name: item.name,
-        category: item.category,
-        baseProperties: { ...item.baseProperties },
-        naturalSpawn: item.naturalSpawn,
-        allowedBiomes: [...item.allowedBiomes],
-      })),
-      craftableItems: items.craftableItems.map((item) => ({
-        id: item.id,
-        requiredItems: [...item.requiredItems],
-        requiredItemNames: [...item.requiredItemNames],
-        requiredTechLevel: item.requiredTechLevel,
-        resultItemId: item.resultItemId,
-        resultItemName: item.resultItemName,
-        efficiencyModifier: item.efficiencyModifier,
-        unlocked: item.unlocked,
-        canCraft: item.canCraft,
-        newlyUnlocked: item.newlyUnlocked,
-        missingItems: [...item.missingItems],
-      })),
-      factionInventory: items.factionInventory.map((item) => ({
-        itemId: item.itemId,
-        itemName: item.itemName,
-        category: item.category,
-        quantity: item.quantity,
-      })),
-      groundItems: items.groundItems.map((item) => ({
-        id: item.id,
-        itemId: item.itemId,
-        itemName: item.itemName,
-        category: item.category,
-        quantity: item.quantity,
-        x: item.x,
-        y: item.y,
-        naturalSpawn: item.naturalSpawn,
-        ageTicks: item.ageTicks,
-      })),
+      catalogSeed: items?.catalogSeed ?? input.seed,
+      catalogCreatedAtMs: items?.catalogCreatedAtMs ?? 0,
+      selectedFactionId: items?.selectedFactionId ?? null,
+      selectedFactionName: items?.selectedFactionName ?? null,
+      selectedFactionTechLevel: factionTechLevel,
+      catalog: items
+        ? items.catalog.map((item) => ({
+            id: item.id,
+            name: item.name,
+            category: item.category,
+            baseProperties: { ...item.baseProperties },
+            naturalSpawn: item.naturalSpawn,
+            allowedBiomes: [...item.allowedBiomes],
+          }))
+        : [],
+      craftableItems: items
+        ? items.craftableItems.map((item) => ({
+            id: item.id,
+            requiredItems: [...item.requiredItems],
+            requiredItemNames: [...item.requiredItemNames],
+            requiredTechLevel: item.requiredTechLevel,
+            resultItemId: item.resultItemId,
+            resultItemName: item.resultItemName,
+            efficiencyModifier: item.efficiencyModifier,
+            unlocked: item.unlocked,
+            canCraft: item.canCraft,
+            newlyUnlocked: item.newlyUnlocked,
+            missingItems: [...item.missingItems],
+          }))
+        : [],
+      factionInventory: items
+        ? items.factionInventory.map((item) => ({
+            itemId: item.itemId,
+            itemName: item.itemName,
+            category: item.category,
+            quantity: item.quantity,
+          }))
+        : [],
+      groundItems: items
+        ? items.groundItems.map((item) => ({
+            id: item.id,
+            itemId: item.itemId,
+            itemName: item.itemName,
+            category: item.category,
+            quantity: item.quantity,
+            x: item.x,
+            y: item.y,
+            naturalSpawn: item.naturalSpawn,
+            ageTicks: item.ageTicks,
+          }))
+        : [],
+      materialsCatalog,
+      resourcesDensity,
+      resourceNodes,
+      structuresCatalog,
+      structuresBuildable,
+      structuresWorld,
+      selectedStructure,
+      volcano,
     }
   }
 
@@ -687,8 +837,15 @@ export class UISnapshotBuilder {
       hydration: member.hydration,
       x: member.x,
       y: member.y,
+      currentIntent: member.currentIntent,
       goal: member.goal,
       activityState: member.activityState,
+      lastAction: member.lastAction,
+      activePlan: member.activePlan
+        ? {
+            ...member.activePlan,
+          }
+        : null,
       inventoryItems: member.inventoryItems.map((item) => ({ itemId: item.itemId, quantity: item.quantity })),
       equipmentSlots: { ...member.equipmentSlots },
       maxCarryWeight: member.maxCarryWeight,
@@ -805,6 +962,17 @@ export class UISnapshotBuilder {
       relations,
       relationSeries,
       interactionEdges,
+      structures: (input.civStructures ?? []).map((structure) => ({
+        id: structure.id,
+        type: structure.type,
+        blueprint: structure.blueprint,
+        factionId: structure.factionId,
+        x: structure.x,
+        y: structure.y,
+        completed: structure.completed,
+        progress: structure.progress,
+        builtAtTick: structure.builtAtTick,
+      })),
       speciesLinks,
       recentDialogues: dialogues.slice(-120).map((dialogue) => ({
         id: dialogue.id,

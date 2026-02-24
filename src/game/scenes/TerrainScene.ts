@@ -12,14 +12,33 @@ import { WorldKnowledgePack } from '../../ai/WorldKnowledgePack'
 import { ToolRouter } from '../../ai/llm/tools/ToolRouter'
 import { SeededRng } from '../../core/SeededRng'
 import { CreatureRenderer } from '../../creatures/CreatureRenderer'
-import { CreatureSystem, type Bounds, type CreatureHooks } from '../../creatures/CreatureSystem'
+import {
+  CreatureSystem,
+  type Bounds,
+  type CreatureHooks,
+  type CreatureSystemState,
+} from '../../creatures/CreatureSystem'
 import { SpeciesRegistry } from '../../creatures/SpeciesRegistry'
 import type { Species } from '../../creatures/types'
-import { CivSystem } from '../../civ/CivSystem'
+import { CivSystem, type CivSystemState } from '../../civ/CivSystem'
 import type { Agent, AgentInspectorData, CivTimelineCategory, Structure } from '../../civ/types'
-import { EventSystem } from '../../events/EventSystem'
-import { CraftingEvolutionSystem } from '../../items/CraftingEvolutionSystem'
+import { EventSystem, type EventSystemState } from '../../events/EventSystem'
+import {
+  CraftingEvolutionSystem,
+  type CraftingEvolutionState,
+} from '../../items/CraftingEvolutionSystem'
 import { ItemCatalog } from '../../items/ItemCatalog'
+import { ItemCatalogGenerator } from '../../items/ItemCatalogGenerator'
+import { MaterialCatalog } from '../../materials/MaterialCatalog'
+import { MaterialCatalogGenerator } from '../../materials/MaterialCatalogGenerator'
+import {
+  ResourceNodeSystem,
+  type ResourceNodeSystemState,
+} from '../../resources/ResourceNodeSystem'
+import { StructureCatalog } from '../../structures/StructureCatalog'
+import { StructureCatalogGenerator } from '../../structures/StructureCatalogGenerator'
+import { StructureRenderer } from '../../structures/StructureRenderer'
+import { StructureSystem, type StructureSystemState } from '../../structures/StructureSystem'
 import type { HeatmapMode } from '../../render/ChunkedTerrainRenderer'
 import { ChunkedTerrainRenderer } from '../../render/ChunkedTerrainRenderer'
 import { SimulationLog } from '../../log/SimulationLog'
@@ -36,7 +55,8 @@ import { SelectionManager } from '../../ui/selection/SelectionManager'
 import { DEFAULT_SIM_TUNING, type SimTuning } from '../../sim/SimTuning'
 import { CreatureInspector } from '../../ui/CreatureInspector'
 import { PlantSystem } from '../../world/PlantSystem'
-import { createWorldState, type WorldState } from '../../world/WorldState'
+import { VolcanoSystem, type VolcanoSystemState } from '../../world/VolcanoSystem'
+import { createWorldState, markAllDirty, type WorldState } from '../../world/WorldState'
 import { EnvironmentUpdater } from '../../world/EnvironmentUpdater'
 import { Camera2D } from '../camera/Camera2D'
 import { TileId } from '../enums/TileId'
@@ -51,6 +71,57 @@ const MAX_STEPS_PER_FRAME = 6
 const DEFAULT_CREATURES = 300
 const SPEED_STEPS = [0.25, 0.5, 1, 2, 5, 10]
 
+export type TerrainSceneOptions = {
+  enableGeneAgent?: boolean
+  enableCivs?: boolean
+  enablePredators?: boolean
+  profileEventRate?: number
+  profileTreeDensity?: number
+  initialSimulationSpeed?: number
+  onManualSaveRequest?: () => void
+}
+
+export type TerrainRuntimeStateInput = {
+  width: number
+  height: number
+  seed: number
+  tick: number
+  tiles: Uint8Array
+  humidity: Uint8Array
+  temperature: Uint8Array
+  fertility: Uint8Array
+  hazard: Uint8Array
+  plantBiomass: Uint8Array
+  volcano: WorldState['volcano']
+  simTuning: SimTuning
+}
+
+export type TerrainSystemsSnapshot = {
+  species: unknown
+  phylogeny: unknown
+  civs: unknown
+  events: unknown
+  items: unknown
+  structures: unknown
+  logs: unknown
+  eras: unknown
+  metrics: unknown
+  runtime?: TerrainRuntimeSystemsSnapshot | null
+}
+
+type TerrainRuntimeSystemsSnapshot = {
+  version: 1
+  rngState: number
+  creatureSystem: CreatureSystemState
+  civSystem: CivSystemState
+  eventSystem: EventSystemState
+  craftingSystem: CraftingEvolutionState | null
+  resourceNodeSystem: ResourceNodeSystemState | null
+  structureSystem: StructureSystemState | null
+  volcanoSystem: VolcanoSystemState | null
+  hiddenCivStructureIds: string[]
+}
+
 function clampSpeed(value: number): number {
   if (!Number.isFinite(value) || value <= 0) {
     return 1
@@ -60,6 +131,10 @@ function clampSpeed(value: number): number {
 
 function clampInt(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(value)))
+}
+
+function deepClone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
 }
 
 function compactJson(value: unknown, maxLen = 820): string {
@@ -211,6 +286,7 @@ export class TerrainScene implements Scene {
 
   private readonly terrainGenerator = new TerrainGenerator()
   private readonly worldGenesisAgent = new WorldGenesisAgent()
+  private readonly options: TerrainSceneOptions
   private readonly llmAgent: LlmAgent
   private readonly descriptionService: CreatureDescriptionService
   private readonly worldKnowledgePack = new WorldKnowledgePack()
@@ -235,6 +311,14 @@ export class TerrainScene implements Scene {
 
   private itemCatalog: ItemCatalog | null = null
   private craftingSystem: CraftingEvolutionSystem | null = null
+  private materialCatalog: MaterialCatalog | null = null
+  private structureCatalog: StructureCatalog | null = null
+  private resourceNodeSystem: ResourceNodeSystem | null = null
+  private structureSystem: StructureSystem | null = null
+  private structureRenderer: StructureRenderer | null = null
+  private volcanoSystem: VolcanoSystem | null = null
+  private selectedStructureId: string | null = null
+  private readonly hiddenCivStructureIds = new Set<string>()
   private resetToken = 0
   private resetInFlight: Promise<void> | null = null
 
@@ -256,6 +340,7 @@ export class TerrainScene implements Scene {
 
   private overlay: OverlayController | null = null
   private inspector: CreatureInspector | null = null
+  private hudVisible = true
 
   private mounted = false
   private paused = false
@@ -380,11 +465,14 @@ export class TerrainScene implements Scene {
     private readonly app: Application,
     terrainMap: TerrainMap,
     private readonly tileSize: number,
+    options: TerrainSceneOptions = {},
   ) {
+    this.options = { ...options }
     this.seed = terrainMap.seed | 0
     this.terrainMap = terrainMap
     this.worldState = createWorldState(this.terrainMap, this.seed, 64)
     this.rng = new SeededRng((this.seed ^ 0x7f4a7c15) >>> 0)
+    this.volcanoSystem = new VolcanoSystem(this.seed ^ 0x4ab02f11)
 
     this.eventSystem = new EventSystem(this.seed, {
       spawnCooldownTicks: 90,
@@ -433,6 +521,7 @@ export class TerrainScene implements Scene {
 
     this.overlay = new OverlayController()
     this.overlay.mount(this.app.canvas.parentElement ?? document.body)
+    this.overlay.setHudVisible(this.hudVisible)
     this.overlay.onAction((action, payload) => {
       if (action === 'playPause') {
         this.togglePause()
@@ -444,6 +533,10 @@ export class TerrainScene implements Scene {
       }
       if (action === 'speedUp') {
         this.stepSpeed(1)
+        return
+      }
+      if (action === 'saveWorld') {
+        this.options.onManualSaveRequest?.()
         return
       }
       if (action === 'reset' && payload && 'seed' in payload && typeof payload.seed === 'number') {
@@ -475,6 +568,8 @@ export class TerrainScene implements Scene {
         this.selectedCivFactionId = agent.factionId
         this.selectedCivSpeciesId = null
         this.selectedNoteId = null
+        this.selectedStructureId = null
+        this.structureRenderer?.setHighlight(null)
         this.selectionManager.selectCreature(agent.id, agent.name)
         this.focusCameraOnTile(agent.x, agent.y)
         this.requestAgentNarrativeBio(agent.id)
@@ -491,6 +586,8 @@ export class TerrainScene implements Scene {
         this.selectedCivAgentId = null
         this.selectedCivSpeciesId = null
         this.selectedNoteId = null
+        this.selectedStructureId = null
+        this.structureRenderer?.setHighlight(null)
         this.hideAgentPopup()
         const faction = this.civSystem.getFactionById(payload.factionId)
         if (faction) {
@@ -528,6 +625,8 @@ export class TerrainScene implements Scene {
         }
         this.selectedCivAgentId = null
         this.selectedNoteId = null
+        this.selectedStructureId = null
+        this.structureRenderer?.setHighlight(null)
         this.hideAgentPopup()
         this.updateOverlayNow()
         return
@@ -541,6 +640,8 @@ export class TerrainScene implements Scene {
         this.selectedNoteId = payload.noteId
         this.selectedCivAgentId = null
         this.selectedCivSpeciesId = null
+        this.selectedStructureId = null
+        this.structureRenderer?.setHighlight(null)
         this.hideAgentPopup()
         const note = this.civSystem.getNoteById(payload.noteId)
         if (note) {
@@ -607,6 +708,15 @@ export class TerrainScene implements Scene {
         typeof payload.id === 'string'
       ) {
         this.jumpToReference(payload.referenceType, payload.id)
+        return
+      }
+      if (
+        action === 'dismantleStructure' &&
+        payload &&
+        'structureId' in payload &&
+        typeof payload.structureId === 'string'
+      ) {
+        this.handleDismantleStructure(payload.structureId)
         return
       }
       if (
@@ -690,6 +800,8 @@ export class TerrainScene implements Scene {
 
     this.inspector?.destroy()
     this.inspector = null
+    this.structureRenderer?.destroy()
+    this.structureRenderer = null
 
     if (this.terrainRenderer) {
       this.terrainRenderer.destroy()
@@ -747,6 +859,7 @@ export class TerrainScene implements Scene {
     this.selectedCivFactionId = null
     this.selectedCivSpeciesId = null
     this.selectedNoteId = null
+    this.selectedStructureId = null
     this.selectionManager.clear()
     this.latestSnapshot = null
     this.civAgentBioCache.clear()
@@ -764,29 +877,63 @@ export class TerrainScene implements Scene {
     this.terrainMap = mapOverride ?? this.generateTerrainMap(this.seed)
     this.worldState = createWorldState(this.terrainMap, this.seed, 64)
     this.rng.reseed((this.seed ^ 0x7f4a7c15) >>> 0)
+    this.simTuning = { ...DEFAULT_SIM_TUNING }
 
-    try {
-      const genesisResult = this.worldGenesisAgent.generate(this.seed)
-      const applied = this.worldGenesisAgent.applyBestConfig(
-        this.worldState,
-        this.simTuning,
-        genesisResult.bestConfig,
-        this.seed,
-      )
-      this.simTuning = applied.tuning
-      this.worldGenesisSummary = this.worldGenesisAgent.toOverlaySummary(genesisResult)
-      this.simLog.addInfo(
-        this.worldState.tick,
-        `World genesis tuned: survival=${genesisResult.report.bestScores.survivalScore.toFixed(3)} biodiversity=${genesisResult.report.bestScores.biodiversityScore.toFixed(3)} stability=${genesisResult.report.bestScores.stabilityScore.toFixed(3)}`,
-      )
-    } catch (error) {
-      this.simLog.add(
-        'info',
-        this.worldState.tick,
-        `World genesis tuner fallback: ${error instanceof Error ? error.message : 'unknown_error'}`,
-        'warn',
-      )
+    let runtimeTuning = {
+      treeDensityMultiplier:
+        typeof this.options.profileTreeDensity === 'number'
+          ? Math.max(0.25, Math.min(2.5, this.options.profileTreeDensity))
+          : 1.25,
+      volcanoIntervalMinTicks: 9000,
+      volcanoIntervalMaxTicks: 17000,
+      volcanoMaxLavaTiles: 170,
     }
+    const geneAgentEnabled = this.options.enableGeneAgent ?? true
+    if (geneAgentEnabled) {
+      try {
+        const genesisResult = this.worldGenesisAgent.generate(this.seed)
+        const applied = this.worldGenesisAgent.applyBestConfig(
+          this.worldState,
+          this.simTuning,
+          genesisResult.bestConfig,
+          this.seed,
+        )
+        this.simTuning = applied.tuning
+        this.worldGenesisSummary = this.worldGenesisAgent.toOverlaySummary(genesisResult)
+        runtimeTuning = this.worldGenesisAgent.deriveRuntimeTuning(genesisResult)
+        this.simLog.addInfo(
+          this.worldState.tick,
+          `World genesis tuned: survival=${genesisResult.report.bestScores.survivalScore.toFixed(3)} biodiversity=${genesisResult.report.bestScores.biodiversityScore.toFixed(3)} stability=${genesisResult.report.bestScores.stabilityScore.toFixed(3)}`,
+        )
+      } catch (error) {
+        this.simLog.add(
+          'info',
+          this.worldState.tick,
+          `World genesis tuner fallback: ${error instanceof Error ? error.message : 'unknown_error'}`,
+          'warn',
+        )
+      }
+    } else {
+      this.simLog.addInfo(this.worldState.tick, 'World genesis tuner disabled by world profile.')
+    }
+
+    if (typeof this.options.profileEventRate === 'number' && Number.isFinite(this.options.profileEventRate)) {
+      this.simTuning.eventRate = Math.max(0.2, Math.min(2.5, this.options.profileEventRate))
+    }
+    if (
+      typeof this.options.initialSimulationSpeed === 'number' &&
+      Number.isFinite(this.options.initialSimulationSpeed)
+    ) {
+      this.simTuning.simulationSpeed = Math.max(0.25, Math.min(4, this.options.initialSimulationSpeed))
+    }
+
+    this.volcanoSystem = new VolcanoSystem(this.seed ^ 0x4ab02f11)
+    this.volcanoSystem.configure({
+      minIntervalTicks: runtimeTuning.volcanoIntervalMinTicks,
+      maxIntervalTicks: runtimeTuning.volcanoIntervalMaxTicks,
+      maxLavaTiles: runtimeTuning.volcanoMaxLavaTiles,
+    })
+    this.volcanoSystem.reset(this.worldState, this.worldState.tick)
 
     this.eventSystem = new EventSystem(this.seed, {
       spawnCooldownTicks: 90,
@@ -810,10 +957,25 @@ export class TerrainScene implements Scene {
       this.worldState.tick,
     )
 
-    const catalog = this.createEmergencyItemCatalog(this.seed)
+    const materialGenerator = new MaterialCatalogGenerator()
+    const itemGenerator = new ItemCatalogGenerator()
+    const structureGenerator = new StructureCatalogGenerator()
+
+    this.materialCatalog = materialGenerator.generate(this.seed, this.worldState)
+    const catalog = itemGenerator.generate(this.seed, this.worldState, this.materialCatalog)
+    this.structureCatalog = structureGenerator.generate(this.seed, this.worldState, this.materialCatalog)
+
+    this.resourceNodeSystem = new ResourceNodeSystem((this.seed ^ 0x7b2f1185) >>> 0, this.materialCatalog)
+    this.resourceNodeSystem.reset(this.worldState, {
+      treeDensityMultiplier: runtimeTuning.treeDensityMultiplier,
+    })
+
+    this.structureSystem = new StructureSystem(this.structureCatalog, this.worldState)
+    this.hiddenCivStructureIds.clear()
+
     this.simLog.addInfo(
       this.worldState.tick,
-      'Item catalog deterministico locale applicato (LLM disabilitato su simulation path).',
+      `Cataloghi gene init: materials=${this.materialCatalog.materials.length} items=${catalog.items.length} structures=${this.structureCatalog.structures.length} treeDensity=${runtimeTuning.treeDensityMultiplier.toFixed(2)} volcanoInterval=${runtimeTuning.volcanoIntervalMinTicks}-${runtimeTuning.volcanoIntervalMaxTicks}`,
     )
 
     if (token !== this.resetToken) {
@@ -822,13 +984,19 @@ export class TerrainScene implements Scene {
     this.itemCatalog = catalog
     this.craftingSystem = new CraftingEvolutionSystem(catalog, (this.seed ^ 0x2c7f6a9b) >>> 0)
     this.civSystem.setItemSystems(catalog, this.craftingSystem)
+    this.civSystem.setResourceNodeSystem(this.resourceNodeSystem)
 
+    const civEnabled = this.options.enableCivs ?? true
     this.civSystem.reset(
       this.worldState,
       this.rng,
       this.worldState.tick,
-      this.creatureSystem.getSpeciesStats(),
+      civEnabled ? this.creatureSystem.getSpeciesStats() : [],
     )
+    if (!civEnabled) {
+      this.simLog.addInfo(this.worldState.tick, 'Civilizations disabled by world profile.')
+    }
+    this.syncWorldStructuresFromCiv()
 
     if (!this.terrainRenderer) {
       this.terrainRenderer = new ChunkedTerrainRenderer(this.worldState, {
@@ -858,6 +1026,19 @@ export class TerrainScene implements Scene {
       this.terrainRenderer.setWorld(this.worldState)
     }
 
+    if (this.structureRenderer) {
+      this.structureRenderer.destroy()
+      this.structureRenderer = null
+    }
+    if (this.structureSystem && this.structureCatalog) {
+      this.structureRenderer = new StructureRenderer(
+        this.structureSystem,
+        this.structureCatalog,
+        this.tileSize,
+      )
+      this.structureRenderer.mount(this.worldContainer)
+    }
+
     if (token !== this.resetToken) {
       return
     }
@@ -883,131 +1064,6 @@ export class TerrainScene implements Scene {
     this.renderFrameLayers()
   }
 
-  private createEmergencyItemCatalog(seed: number): ItemCatalog {
-    return new ItemCatalog(seed, [
-      {
-        id: 'stone',
-        name: 'Stone',
-        category: 'resource',
-        baseProperties: { weight: 1.2, buildValue: 3 },
-        naturalSpawn: true,
-        allowedBiomes: [TileId.Rock, TileId.Hills, TileId.Mountain, TileId.Scorched],
-      },
-      {
-        id: 'flint',
-        name: 'Flint',
-        category: 'resource',
-        baseProperties: { weight: 0.8, buildValue: 2, damage: 1 },
-        naturalSpawn: true,
-        allowedBiomes: [TileId.Rock, TileId.Hills, TileId.Beach],
-      },
-      {
-        id: 'branch',
-        name: 'Branch',
-        category: 'resource',
-        baseProperties: { weight: 0.6, buildValue: 2 },
-        naturalSpawn: true,
-        allowedBiomes: [TileId.Grassland, TileId.Forest, TileId.Jungle, TileId.Savanna],
-      },
-      {
-        id: 'plant-fiber',
-        name: 'Plant Fiber',
-        category: 'resource',
-        baseProperties: { weight: 0.3, buildValue: 1 },
-        naturalSpawn: true,
-        allowedBiomes: [TileId.Forest, TileId.Jungle, TileId.Swamp, TileId.Grassland],
-      },
-      {
-        id: 'berry-cluster',
-        name: 'Berry Cluster',
-        category: 'food',
-        baseProperties: { weight: 0.35, nutrition: 12 },
-        naturalSpawn: true,
-        allowedBiomes: [TileId.Forest, TileId.Jungle, TileId.Grassland, TileId.Swamp],
-      },
-      {
-        id: 'wild-root',
-        name: 'Wild Root',
-        category: 'food',
-        baseProperties: { weight: 0.45, nutrition: 11 },
-        naturalSpawn: true,
-        allowedBiomes: [TileId.Grassland, TileId.Savanna, TileId.Forest],
-      },
-      {
-        id: 'clay-lump',
-        name: 'Clay Lump',
-        category: 'resource',
-        baseProperties: { weight: 1.1, buildValue: 4 },
-        naturalSpawn: true,
-        allowedBiomes: [TileId.Swamp, TileId.Beach, TileId.Grassland],
-      },
-      {
-        id: 'stone-knife',
-        name: 'Stone Knife',
-        category: 'tool',
-        baseProperties: { weight: 0.55, durability: 52, damage: 5 },
-        naturalSpawn: false,
-        allowedBiomes: [TileId.Grassland, TileId.Forest, TileId.Hills],
-      },
-      {
-        id: 'stone-axe',
-        name: 'Stone Axe',
-        category: 'tool',
-        baseProperties: { weight: 1.8, durability: 70, damage: 8 },
-        naturalSpawn: false,
-        allowedBiomes: [TileId.Grassland, TileId.Forest, TileId.Hills],
-      },
-      {
-        id: 'fiber-rope',
-        name: 'Fiber Rope',
-        category: 'tool',
-        baseProperties: { weight: 0.45, durability: 58 },
-        naturalSpawn: false,
-        allowedBiomes: [TileId.Grassland, TileId.Forest, TileId.Savanna],
-      },
-      {
-        id: 'wood-spear',
-        name: 'Wood Spear',
-        category: 'weapon',
-        baseProperties: { weight: 1.35, durability: 48, damage: 12 },
-        naturalSpawn: false,
-        allowedBiomes: [TileId.Grassland, TileId.Forest, TileId.Savanna],
-      },
-      {
-        id: 'woven-basket',
-        name: 'Woven Basket',
-        category: 'tool',
-        baseProperties: { weight: 0.9, durability: 42, storage: 24 },
-        naturalSpawn: false,
-        allowedBiomes: [TileId.Grassland, TileId.Forest, TileId.Savanna],
-      },
-      {
-        id: 'wood-plank',
-        name: 'Wood Plank',
-        category: 'structure_part',
-        baseProperties: { weight: 1.3, buildValue: 8 },
-        naturalSpawn: false,
-        allowedBiomes: [TileId.Grassland, TileId.Forest, TileId.Hills],
-      },
-      {
-        id: 'clay-brick',
-        name: 'Clay Brick',
-        category: 'structure_part',
-        baseProperties: { weight: 2.0, buildValue: 12 },
-        naturalSpawn: false,
-        allowedBiomes: [TileId.Grassland, TileId.Swamp, TileId.Beach],
-      },
-      {
-        id: 'ceramic-jar',
-        name: 'Ceramic Jar',
-        category: 'artifact',
-        baseProperties: { weight: 1.0, durability: 38, storage: 18 },
-        naturalSpawn: false,
-        allowedBiomes: [TileId.Grassland, TileId.Forest, TileId.Savanna],
-      },
-    ])
-  }
-
   private generateTerrainMap(seed: number): TerrainMap {
     const cfg: TerrainGenConfig = {
       width: this.terrainMap.width,
@@ -1031,10 +1087,16 @@ export class TerrainScene implements Scene {
     const tick = this.worldState.tick
 
     const eventResult = this.eventSystem.step(this.worldState, this.rng, tick)
-    this.lastOverlay = eventResult.overlay
+    const volcanoResult = this.volcanoSystem?.step(this.worldState, tick) ?? { changed: false, overlay: 0 }
+    this.lastOverlay = {
+      stormAlpha: eventResult.overlay.stormAlpha,
+      heatAlpha: Math.max(eventResult.overlay.heatAlpha, volcanoResult.overlay),
+      coldAlpha: eventResult.overlay.coldAlpha,
+    }
 
     this.environmentUpdater.step(this.worldState, this.rng, tick, 1200)
     this.plantSystem.step(this.worldState, this.simTuning, 2200)
+    this.resourceNodeSystem?.step(tick)
 
     const creatureStep = this.creatureSystem.step(
       this.worldState,
@@ -1051,12 +1113,27 @@ export class TerrainScene implements Scene {
       this.simLog.addDeath(tick, `Morti fauna tick=${tick}: -${creatureStep.deaths}`)
     }
 
-    const civStep = this.civSystem.step(
-      this.worldState,
-      this.rng,
-      tick,
-      this.creatureSystem.getSpeciesStats(),
-    )
+    const civEnabled = this.options.enableCivs ?? true
+    const civStep = civEnabled
+      ? this.civSystem.step(
+          this.worldState,
+          this.rng,
+          tick,
+          this.creatureSystem.getSpeciesStats(),
+        )
+      : {
+          changed: false,
+          births: 0,
+          deaths: 0,
+          newFactions: 0,
+          talks: 0,
+          completedBuildings: 0,
+          notesWritten: 0,
+        }
+    if (civEnabled) {
+      this.syncWorldStructuresFromCiv()
+    }
+    this.structureSystem?.step(tick)
     if (civStep.births > 0) {
       this.simLog.addBirth(tick, `Nascite civili tick=${tick}: +${civStep.births}`, { domain: 'civ' })
     }
@@ -1077,6 +1154,7 @@ export class TerrainScene implements Scene {
     }
 
     this.captureRecentEventLogs()
+    this.captureVolcanoEventLogs()
     this.captureCivTimelineLogs()
 
     if (tick % 20 === 0) {
@@ -1145,39 +1223,44 @@ export class TerrainScene implements Scene {
     this.renderTerritoryOverlay(zoom)
     this.renderRelationsOverlay(zoom)
 
-    this.civStructuresGraphics.clear()
-    if (zoom < 1.5) {
-      const factions = this.civSystem.getFactionSummaries()
-      for (let i = 0; i < factions.length; i++) {
-        const faction = factions[i]
-        if (!faction) continue
-        const color = hashColorHex(faction.id)
-        const px = faction.homeCenterX * this.tileSize
-        const py = faction.homeCenterY * this.tileSize
-        const size = this.tileSize * 2
-        this.civStructuresGraphics
-          .rect(px - size * 0.25, py - size * 0.25, size, size)
-          .fill({ color, alpha: 0.55 })
-      }
+    if (this.structureRenderer) {
+      this.civStructuresGraphics.clear()
+      this.structureRenderer.render(bounds, zoom)
     } else {
-      const structures = this.civSystem.queryStructuresInRect(bounds, this.civStructureScratch)
-      for (let i = 0; i < structures.length; i++) {
-        const structure = structures[i]
-        if (!structure) continue
+      this.civStructuresGraphics.clear()
+      if (zoom < 1.5) {
+        const factions = this.civSystem.getFactionSummaries()
+        for (let i = 0; i < factions.length; i++) {
+          const faction = factions[i]
+          if (!faction) continue
+          const color = hashColorHex(faction.id)
+          const px = faction.homeCenterX * this.tileSize
+          const py = faction.homeCenterY * this.tileSize
+          const size = this.tileSize * 2
+          this.civStructuresGraphics
+            .rect(px - size * 0.25, py - size * 0.25, size, size)
+            .fill({ color, alpha: 0.55 })
+        }
+      } else {
+        const structures = this.civSystem.queryStructuresInRect(bounds, this.civStructureScratch)
+        for (let i = 0; i < structures.length; i++) {
+          const structure = structures[i]
+          if (!structure) continue
 
-        const px = structure.x * this.tileSize
-        const py = structure.y * this.tileSize
-        const color = structureColor(structure.type)
-        const alpha = structure.completed ? 0.9 : 0.55
+          const px = structure.x * this.tileSize
+          const py = structure.y * this.tileSize
+          const color = structureColor(structure.type)
+          const alpha = structure.completed ? 0.9 : 0.55
 
-        this.civStructuresGraphics
-          .rect(px + 1, py + 1, Math.max(1, this.tileSize - 2), Math.max(1, this.tileSize - 2))
-          .fill({ color, alpha })
-
-        if (zoom >= 3) {
           this.civStructuresGraphics
             .rect(px + 1, py + 1, Math.max(1, this.tileSize - 2), Math.max(1, this.tileSize - 2))
-            .stroke({ color: 0x111111, alpha: 0.8, width: 1 })
+            .fill({ color, alpha })
+
+          if (zoom >= 3) {
+            this.civStructuresGraphics
+              .rect(px + 1, py + 1, Math.max(1, this.tileSize - 2), Math.max(1, this.tileSize - 2))
+              .stroke({ color: 0x111111, alpha: 0.8, width: 1 })
+          }
         }
       }
     }
@@ -1388,8 +1471,23 @@ export class TerrainScene implements Scene {
     const tileXI = Math.floor(tileX)
     const tileYI = Math.floor(tileY)
 
+    const worldStructure = this.structureSystem?.getAt(tileXI, tileYI)
+    if (worldStructure) {
+      this.selectedStructureId = worldStructure.id
+      this.selectedCivAgentId = null
+      this.selectedNoteId = null
+      this.selectionManager.selectStructure(worldStructure.id, worldStructure.defId)
+      this.structureRenderer?.setHighlight(worldStructure.id)
+      this.focusCameraOnTileWithHighlight(tileXI, tileYI)
+      this.overlay?.openTab('items')
+      this.updateOverlayNow()
+      return
+    }
+
     const note = this.civSystem.getNoteAtTile(tileXI, tileYI)
     if (note) {
+      this.selectedStructureId = null
+      this.structureRenderer?.setHighlight(null)
       this.selectedNoteId = note.id
       this.selectedCivFactionId = note.factionId
       this.selectedCivAgentId = null
@@ -1406,6 +1504,8 @@ export class TerrainScene implements Scene {
 
     const civAgent = this.civSystem.getAgentAtTile(tileX, tileY)
     if (civAgent) {
+      this.selectedStructureId = null
+      this.structureRenderer?.setHighlight(null)
       this.selectedCivAgentId = civAgent.id
       this.selectedCivFactionId = civAgent.factionId
       this.selectedCivSpeciesId = null
@@ -1422,6 +1522,8 @@ export class TerrainScene implements Scene {
     }
 
     this.selectedCivAgentId = null
+    this.selectedStructureId = null
+    this.structureRenderer?.setHighlight(null)
     this.hideAgentPopup()
 
     const territoryFactionId = this.civSystem.getTerritoryOwnerAt(tileXI, tileYI)
@@ -1470,7 +1572,11 @@ export class TerrainScene implements Scene {
     this.civAgentBioInFlight.add(agentId)
     const bio = [
       `${data.name} (${data.role}) · ${data.factionName}`,
-      `Goal: ${data.goal}`,
+      `Intent: ${data.currentIntent} | Goal: ${data.goal}`,
+      `Last action: ${data.lastAction}`,
+      data.activePlan
+        ? `Active plan: ${data.activePlan.intent} step ${data.activePlan.currentStepIndex + 1}/${data.activePlan.totalSteps} (${(data.activePlan.progress01 * 100).toFixed(0)}%)`
+        : 'Active plan: none',
       `Energy=${data.energy.toFixed(1)} Hydration=${data.hydration.toFixed(1)} Age=${data.age.toFixed(1)}`,
       `Vitals: vitality=${(data.vitality * 100).toFixed(0)}% hunger=${(data.hunger * 100).toFixed(0)}% waterNeed=${(data.waterNeed * 100).toFixed(0)}% hazardStress=${(data.hazardStress * 100).toFixed(0)}%`,
       `Inventory: food=${data.inventory.food.toFixed(1)} wood=${data.inventory.wood.toFixed(1)} stone=${data.inventory.stone.toFixed(1)} ore=${data.inventory.ore.toFixed(1)}`,
@@ -1495,10 +1601,13 @@ export class TerrainScene implements Scene {
 
     this.civThoughtGlossInFlight.add(agentId)
     const reasons = data.mentalState.lastReasonCodes.join(', ') || 'none'
+    const planSummary = data.activePlan
+      ? `Plan=${data.activePlan.intent} ${data.activePlan.currentStepIndex + 1}/${data.activePlan.totalSteps} ${(data.activePlan.progress01 * 100).toFixed(0)}%`
+      : 'Plan=none'
     const gloss = [
-      `Goal=${data.goal}; state=${data.activityState}.`,
+      `Intent=${data.currentIntent}; Goal=${data.goal}; state=${data.activityState}; ${planSummary}.`,
       `Signals: food=${(data.mentalState.perceivedFoodLevel * 100).toFixed(0)}% threat=${(data.mentalState.perceivedThreatLevel * 100).toFixed(0)}% stress=${(data.mentalState.stressLevel * 100).toFixed(0)}%.`,
-      `Reason codes: ${reasons}.`,
+      `Reason codes: ${reasons}. Last action: ${data.lastAction}.`,
     ].join(' ')
 
     this.civSystem.setAgentThoughtGloss(agentId, gloss)
@@ -1533,6 +1642,72 @@ export class TerrainScene implements Scene {
     this.updateOverlayNow()
   }
 
+  private syncWorldStructuresFromCiv(): void {
+    if (!this.structureSystem || !this.structureCatalog) {
+      return
+    }
+
+    const civStructures = this.civSystem.getStructures()
+    const externalIds = new Set<string>()
+
+    for (let i = 0; i < civStructures.length; i++) {
+      const structure = civStructures[i]
+      if (!structure) continue
+      if (this.hiddenCivStructureIds.has(structure.id)) {
+        continue
+      }
+      const defId = this.mapCivStructureToDefinition(structure.type, structure.blueprint)
+      if (!defId || !this.structureCatalog.has(defId)) {
+        continue
+      }
+
+      const externalId = `civ-${structure.id}`
+      externalIds.add(externalId)
+      const hp01 = Math.max(0.2, Math.min(1, structure.hp / 130))
+      this.structureSystem.upsertExternal({
+        idOverride: externalId,
+        defId,
+        x: structure.x,
+        y: structure.y,
+        factionId: structure.factionId,
+        builtAtTick: structure.builtAtTick,
+        startState: structure.completed ? 'active' : 'building',
+        initialHp01: hp01,
+      })
+    }
+
+    this.structureSystem.removeMissingExternal(externalIds)
+  }
+
+  private mapCivStructureToDefinition(type: string, blueprint?: string): string | null {
+    const bp = blueprint?.toLowerCase()
+    if (bp === 'hut') return 'hut'
+    if (bp === 'storage') return 'storage'
+    if (bp === 'palisade') return 'wall'
+    if (bp === 'shrine') return 'camp'
+    if (bp === 'farm_plot') return 'farm_plot'
+    if (bp === 'watch_tower') return 'watch_tower'
+
+    switch (type) {
+      case 'Camp':
+        return 'camp'
+      case 'House':
+        return 'hut'
+      case 'Storage':
+        return 'storage'
+      case 'FarmPlot':
+        return 'farm_plot'
+      case 'WatchTower':
+        return 'watch_tower'
+      case 'Temple':
+        return this.structureCatalog?.has('forge') ? 'forge' : 'camp'
+      case 'Wall':
+        return 'wall'
+      default:
+        return null
+    }
+  }
+
   private captureRecentEventLogs(): void {
     const recent = this.eventSystem.getRecentEvents()
     for (let i = 0; i < recent.length; i++) {
@@ -1563,6 +1738,27 @@ export class TerrainScene implements Scene {
           break
         }
       }
+    }
+  }
+
+  private captureVolcanoEventLogs(): void {
+    const recent = this.volcanoSystem?.getRecentEvents() ?? []
+    for (let i = 0; i < recent.length; i++) {
+      const event = recent[i]
+      if (!event || this.seenEventIds.has(event.id)) {
+        continue
+      }
+
+      this.seenEventIds.add(event.id)
+      this.simLog.addEvent(
+        event.tick,
+        `${event.type} @ (${event.x}, ${event.y})`,
+        {
+          eventId: event.id,
+          x: event.x,
+          y: event.y,
+        },
+      )
     }
   }
 
@@ -1633,12 +1829,23 @@ export class TerrainScene implements Scene {
     }
 
     if (request.type === 'dialogue') {
-      const tone = request.payload.contextSummary.toLowerCase().includes('war') ? 'alert' : 'neutral'
+      const context = `${request.payload.contextSummary} | ${request.payload.actionContext}`
+      const tone = context.toLowerCase().includes('war') || context.toLowerCase().includes('defend')
+        ? 'alert'
+        : 'neutral'
+      const fallbackTerms = [
+        ...request.payload.utteranceTokens.slice(0, 2),
+        ...request.payload.recentFactionUtterances
+          .flatMap((line) => line.split(/\s+/))
+          .filter((token) => token.length > 3)
+          .slice(0, 2),
+      ]
       this.civSystem.applyDialogueTranslation(request.payload.dialogueId, {
-        gloss_it: `${request.payload.speakerAName} e ${request.payload.speakerBName}: ${request.payload.contextSummary}`.slice(0, 180),
+        gloss_it: `${request.payload.speakerAName} e ${request.payload.speakerBName}: ${context}`.slice(0, 220),
         tone,
-        new_terms: request.payload.utteranceTokens.slice(0, 4),
+        new_terms: fallbackTerms,
       })
+      this.updateOverlayNow()
       return
     }
 
@@ -1702,6 +1909,47 @@ export class TerrainScene implements Scene {
     message.error = update.error
     message.references = update.references ? update.references.map((ref) => ({ ...ref })) : []
     message.suggestedQuestions = update.suggestedQuestions ? [...update.suggestedQuestions] : []
+  }
+
+  private handleDismantleStructure(structureId: string): void {
+    if (!this.structureSystem) {
+      return
+    }
+
+    const result = this.structureSystem.dismantle(structureId)
+    if (!result.removed) {
+      this.simLog.addInfo(this.worldState.tick, `Dismantle failed for ${structureId}`)
+      return
+    }
+
+    if (structureId.startsWith('civ-')) {
+      this.hiddenCivStructureIds.add(structureId.replace(/^civ-/, ''))
+    }
+
+    if (result.returnedMaterials && this.selectedCivFactionId) {
+      const faction = this.civSystem.getFactionById(this.selectedCivFactionId)
+      if (faction) {
+        for (let i = 0; i < result.returnedMaterials.length; i++) {
+          const row = result.returnedMaterials[i]
+          if (!row || row.amount <= 0) continue
+          if (row.materialId === 'wood') faction.stockpile.wood += row.amount
+          else if (row.materialId === 'stone') faction.stockpile.stone += row.amount
+          else if (row.materialId === 'iron_ore' || row.materialId === 'iron_ingot') faction.stockpile.ore += row.amount
+        }
+      }
+    }
+
+    if (this.selectedStructureId === structureId) {
+      this.selectedStructureId = null
+      this.structureRenderer?.setHighlight(null)
+    }
+
+    this.simLog.addCiv(
+      'civ_build',
+      this.worldState.tick,
+      `Structure dismantled: ${structureId}`,
+    )
+    this.updateOverlayNow()
   }
 
   private buildAiHistoryForService(): Array<{ role: 'user' | 'assistant'; text: string }> {
@@ -1807,15 +2055,22 @@ export class TerrainScene implements Scene {
           title: `Member ${member.name} [${member.agentId}]`,
           lines: [
             `faction=${member.factionName} role=${member.role} species=${member.speciesId}`,
-            `goal=${member.goal} state=${member.activityState} energy=${member.energy.toFixed(1)} hydration=${member.hydration.toFixed(1)}`,
+            `intent=${member.currentIntent} goal=${member.goal} state=${member.activityState} energy=${member.energy.toFixed(1)} hydration=${member.hydration.toFixed(1)}`,
+            `lastAction=${member.lastAction}`,
+            member.activePlan
+              ? `plan=${member.activePlan.intent} step=${member.activePlan.currentStepIndex + 1}/${member.activePlan.totalSteps} progress=${(member.activePlan.progress01 * 100).toFixed(0)}%`
+              : 'plan=none',
             `mental: reasons=${member.mentalState.lastReasonCodes.join(', ') || '-'} stress=${(member.mentalState.stressLevel * 100).toFixed(0)}%`,
           ],
           payloadPreview: compactJson({
             agentId: member.agentId,
             factionId: member.factionId,
             role: member.role,
+            intent: member.currentIntent,
             goal: member.goal,
             state: member.activityState,
+            lastAction: member.lastAction,
+            activePlan: member.activePlan,
             mentalState: member.mentalState,
             inventoryRows: member.inventoryRows,
           }),
@@ -2073,8 +2328,14 @@ export class TerrainScene implements Scene {
     }
 
     if (type === 'event') {
-      const active = this.eventSystem.getActiveEvents().find((event) => event.id === entityId)
-      const recent = this.eventSystem.getRecentEvents().find((event) => event.id === entityId)
+      const active = [
+        ...this.eventSystem.getActiveEvents(),
+        ...(this.volcanoSystem?.getActiveEvent() ? [this.volcanoSystem.getActiveEvent()!] : []),
+      ].find((event) => event.id === entityId)
+      const recent = [
+        ...this.eventSystem.getRecentEvents(),
+        ...(this.volcanoSystem?.getRecentEvents() ?? []),
+      ].find((event) => event.id === entityId)
       const row = active ?? recent
       if (!row) {
         return
@@ -2082,6 +2343,20 @@ export class TerrainScene implements Scene {
       this.selectionManager.selectEvent(entityId, row.type)
       this.focusCameraOnTileWithHighlight(row.x, row.y)
       this.overlay?.openTab('events')
+      this.updateOverlayNow()
+      return
+    }
+
+    if (type === 'structure') {
+      const structure = this.structureSystem?.getById(entityId)
+      if (!structure) {
+        return
+      }
+      this.selectedStructureId = structure.id
+      this.structureRenderer?.setHighlight(structure.id)
+      this.selectionManager.selectStructure(structure.id, structure.defId)
+      this.focusCameraOnTileWithHighlight(structure.x, structure.y)
+      this.overlay?.openTab('items')
       this.updateOverlayNow()
       return
     }
@@ -2133,6 +2408,91 @@ export class TerrainScene implements Scene {
     }
     this.selectedCivFactionId = selectedFactionId
 
+    const activeEvents = [...this.eventSystem.getActiveEvents()]
+    const volcanoActive = this.volcanoSystem?.getActiveEvent()
+    if (volcanoActive) {
+      activeEvents.push(volcanoActive)
+    }
+    const recentEvents = [
+      ...this.eventSystem.getRecentEvents(),
+      ...(this.volcanoSystem?.getRecentEvents() ?? []),
+    ].sort((a, b) => a.tick - b.tick)
+      .slice(-220)
+
+    const materialRows = this.materialCatalog
+      ? this.materialCatalog.materials.map((material) => ({
+          id: material.id,
+          category: material.category,
+          hardness: material.hardness,
+          heatResistance: material.heatResistance,
+          lavaResistance: material.lavaResistance,
+          hazardResistance: material.hazardResistance,
+          rarity: material.rarity,
+          allowedBiomes: [...material.allowedBiomes],
+        }))
+      : []
+
+    const structureCatalogRows = this.structureCatalog
+      ? this.structureCatalog.structures.map((structure) => ({
+          id: structure.id,
+          name: structure.name,
+          size: { ...structure.size },
+          requiredTechLevel: structure.requiredTechLevel,
+          buildCost: structure.buildCost.map((row) => ({ ...row })),
+          utilityTags: [...structure.utilityTags],
+          heatResistance: structure.heatResistance,
+          lavaResistance: structure.lavaResistance,
+          hazardResistance: structure.hazardResistance,
+        }))
+      : []
+
+    const structureWorldRows = this.structureSystem
+      ? this.structureSystem.getAll().map((structure) => ({
+          id: structure.id,
+          defId: structure.defId,
+          name: this.structureCatalog?.getById(structure.defId)?.name ?? structure.defId,
+          factionId: structure.factionId,
+          x: structure.x,
+          y: structure.y,
+          w: structure.w,
+          h: structure.h,
+          state: structure.state,
+          hp: structure.hp,
+          maxHp: structure.maxHp,
+          builtAtTick: structure.builtAtTick,
+        }))
+      : []
+
+    const selectedStructureInspector =
+      this.selectedStructureId && this.structureSystem
+        ? this.structureSystem.getInspectorData(this.selectedStructureId)
+        : null
+    if (this.selectedStructureId && !selectedStructureInspector) {
+      this.selectedStructureId = null
+      this.structureRenderer?.setHighlight(null)
+    }
+
+    const selectedStructure = selectedStructureInspector
+      ? {
+          id: selectedStructureInspector.instance.id,
+          defId: selectedStructureInspector.instance.defId,
+          name: selectedStructureInspector.definition.name,
+          ownerFactionId: selectedStructureInspector.ownerFactionId,
+          x: selectedStructureInspector.instance.x,
+          y: selectedStructureInspector.instance.y,
+          w: selectedStructureInspector.instance.w,
+          h: selectedStructureInspector.instance.h,
+          state: selectedStructureInspector.instance.state,
+          hp: selectedStructureInspector.instance.hp,
+          maxHp: selectedStructureInspector.instance.maxHp,
+          utilityTags: [...selectedStructureInspector.definition.utilityTags],
+          buildCost: selectedStructureInspector.buildCost.map((row) => ({ ...row })),
+          heatResistance: selectedStructureInspector.definition.heatResistance,
+          lavaResistance: selectedStructureInspector.definition.lavaResistance,
+          hazardResistance: selectedStructureInspector.definition.hazardResistance,
+        }
+      : null
+
     const snapshot = this.snapshotBuilder.build({
       tick: this.worldState.tick,
       fps: this.fps > 0 ? this.fps : null,
@@ -2141,14 +2501,15 @@ export class TerrainScene implements Scene {
       seed: this.seed,
       world: this.worldState,
       speciesStats: this.creatureSystem.getSpeciesStats(),
-      activeEvents: this.eventSystem.getActiveEvents(),
-      recentEvents: this.eventSystem.getRecentEvents(),
+      activeEvents,
+      recentEvents,
       logs: this.simLog.getEntries(1200),
       civFactions: this.civSystem.getFactionSummaries(),
       civTimeline: this.civSystem.getTimeline(320),
       civDialogues: this.civSystem.getDialogues(140),
       civMetrics: this.civSystem.getMetrics(320),
       civMembers: this.civSystem.getFactionMembers(null, 1200),
+      civStructures: this.civSystem.getStructures(),
       civTerritories: this.civSystem.getTerritorySummary(3, 4800),
       civNotes: this.civSystem.getNotes(320),
       civRelations: this.civSystem.getRelationSummaries(),
@@ -2158,6 +2519,22 @@ export class TerrainScene implements Scene {
       selectedFactionId,
       selectedSpeciesId: this.selectedCivSpeciesId,
       civItems: this.civSystem.getItemsSnapshot(this.worldState.tick, selectedFactionId),
+      materialsCatalog: materialRows,
+      resourceNodeDensity: this.resourceNodeSystem?.getDensitySummary() ?? null,
+      resourceNodeRows: this.resourceNodeSystem?.getNodes(220) ?? [],
+      structureCatalog: structureCatalogRows,
+      structureWorldRows,
+      selectedStructure,
+      volcanoSummary: this.worldState.volcano
+        ? {
+            anchorX: this.worldState.volcano.anchor.x,
+            anchorY: this.worldState.volcano.anchor.y,
+            nextEruptionTick: this.worldState.volcano.nextEruptionTick,
+            activeEruptionId: this.worldState.volcano.activeEruptionId,
+            minIntervalTicks: this.worldState.volcano.minIntervalTicks,
+            maxIntervalTicks: this.worldState.volcano.maxIntervalTicks,
+          }
+        : null,
       selectedAgent,
       aiChat: this.buildAiChatSummary(),
       worldGenesis: this.worldGenesisSummary,
@@ -2396,5 +2773,374 @@ export class TerrainScene implements Scene {
     const y = Math.max(margin, Math.min(window.innerHeight - popupHeight - margin, clientY + 14))
     this.agentPopup.style.left = `${x}px`
     this.agentPopup.style.top = `${y}px`
+  }
+
+  getTick(): number {
+    return this.worldState.tick
+  }
+
+  isPaused(): boolean {
+    return this.paused
+  }
+
+  setPaused(value: boolean): void {
+    this.paused = value
+    this.updateOverlayNow()
+  }
+
+  setHudVisible(visible: boolean): void {
+    this.hudVisible = visible
+    this.overlay?.setHudVisible(visible)
+  }
+
+  setDebugOverlayFlags(flags: { showTerritoryOverlay?: boolean; showHazardOverlay?: boolean }): void {
+    if (typeof flags.showTerritoryOverlay === 'boolean') {
+      this.territoryOverlayEnabled = flags.showTerritoryOverlay
+      if (!this.territoryOverlayEnabled) {
+        this.civTerritoryGraphics.clear()
+        this.civRelationsGraphics.clear()
+        this.civNotesGraphics.clear()
+      } else {
+        this.lastTerritoryVersion = -1
+      }
+    }
+
+    if (typeof flags.showHazardOverlay === 'boolean') {
+      if (flags.showHazardOverlay) {
+        this.overlayMode = 'hazard'
+      } else if (this.overlayMode === 'hazard') {
+        this.overlayMode = 'none'
+      }
+      this.terrainRenderer?.setHeatmapMode(this.overlayMode)
+    }
+
+    this.renderFrameLayers()
+    this.updateOverlayNow()
+  }
+
+  getLatestSnapshot(): SimulationSnapshot | null {
+    return this.latestSnapshot
+  }
+
+  focusWorldPoint(tileX: number, tileY: number): void {
+    this.focusCameraOnTileWithHighlight(Math.floor(tileX), Math.floor(tileY))
+  }
+
+  focusStructureInstanceById(structureId: string): boolean {
+    const structure = this.structureSystem?.getById(structureId)
+    if (!structure) {
+      return false
+    }
+    this.selectedStructureId = structure.id
+    this.selectedCivAgentId = null
+    this.selectedCivSpeciesId = null
+    this.selectedNoteId = null
+    this.structureRenderer?.setHighlight(structure.id)
+    this.selectionManager.selectStructure(structure.id, structure.defId)
+    this.focusCameraOnTileWithHighlight(structure.x, structure.y)
+    this.updateOverlayNow()
+    return true
+  }
+
+  focusFirstStructureByDefinition(defId: string): boolean {
+    const list = this.structureSystem?.getAll() ?? []
+    const match = list.find((row) => row.defId === defId)
+    if (!match) {
+      return false
+    }
+    return this.focusStructureInstanceById(match.id)
+  }
+
+  exportRuntimeStateInput(): TerrainRuntimeStateInput {
+    return {
+      width: this.worldState.width,
+      height: this.worldState.height,
+      seed: this.worldState.seed,
+      tick: this.worldState.tick,
+      tiles: new Uint8Array(this.worldState.tiles),
+      humidity: new Uint8Array(this.worldState.humidity),
+      temperature: new Uint8Array(this.worldState.temperature),
+      fertility: new Uint8Array(this.worldState.fertility),
+      hazard: new Uint8Array(this.worldState.hazard),
+      plantBiomass: new Uint8Array(this.worldState.plantBiomass),
+      volcano: {
+        anchor: { ...this.worldState.volcano.anchor },
+        minIntervalTicks: this.worldState.volcano.minIntervalTicks,
+        maxIntervalTicks: this.worldState.volcano.maxIntervalTicks,
+        maxLavaTiles: this.worldState.volcano.maxLavaTiles,
+        nextEruptionTick: this.worldState.volcano.nextEruptionTick,
+        activeEruptionId: this.worldState.volcano.activeEruptionId,
+      },
+      simTuning: { ...this.simTuning },
+    }
+  }
+
+  async hydrateRuntimeState(input: TerrainRuntimeStateInput): Promise<void> {
+    if (this.resetInFlight) {
+      await this.resetInFlight
+    }
+
+    if (
+      input.width !== this.worldState.width ||
+      input.height !== this.worldState.height ||
+      input.seed !== this.worldState.seed
+    ) {
+      const mapOverride: TerrainMap = {
+        width: input.width,
+        height: input.height,
+        seed: input.seed,
+        tiles: new Uint8Array(input.tiles),
+      }
+      await this.resetSimulation(input.seed, mapOverride)
+      if (this.resetInFlight) {
+        await this.resetInFlight
+      }
+    }
+
+    const size = this.worldState.width * this.worldState.height
+    if (
+      input.tiles.length < size ||
+      input.humidity.length < size ||
+      input.temperature.length < size ||
+      input.fertility.length < size ||
+      input.hazard.length < size ||
+      input.plantBiomass.length < size
+    ) {
+      return
+    }
+
+    this.worldState.tick = Math.max(0, input.tick | 0)
+    this.worldState.tiles.set(input.tiles.subarray(0, size))
+    this.worldState.humidity.set(input.humidity.subarray(0, size))
+    this.worldState.temperature.set(input.temperature.subarray(0, size))
+    this.worldState.fertility.set(input.fertility.subarray(0, size))
+    this.worldState.hazard.set(input.hazard.subarray(0, size))
+    this.worldState.plantBiomass.set(input.plantBiomass.subarray(0, size))
+    this.worldState.volcano = {
+      anchor: Object.freeze({ ...input.volcano.anchor }),
+      minIntervalTicks: input.volcano.minIntervalTicks,
+      maxIntervalTicks: input.volcano.maxIntervalTicks,
+      maxLavaTiles: input.volcano.maxLavaTiles,
+      nextEruptionTick: input.volcano.nextEruptionTick,
+      activeEruptionId: input.volcano.activeEruptionId,
+    }
+
+    this.simTuning = { ...input.simTuning }
+    this.eventSystem.setEventRateMultiplier(this.simTuning.eventRate)
+    this.creatureSystem.setTuning({
+      baseMetabolism: this.simTuning.baseMetabolism,
+      reproductionThreshold: this.simTuning.reproductionThreshold,
+      reproductionCost: this.simTuning.reproductionCost,
+      mutationRate: this.simTuning.mutationRate,
+    })
+
+    this.volcanoSystem?.configure({
+      minIntervalTicks: input.volcano.minIntervalTicks,
+      maxIntervalTicks: input.volcano.maxIntervalTicks,
+      maxLavaTiles: input.volcano.maxLavaTiles,
+    })
+    this.volcanoSystem?.reset(this.worldState, this.worldState.tick)
+    this.worldState.volcano.nextEruptionTick = input.volcano.nextEruptionTick
+    this.worldState.volcano.activeEruptionId = input.volcano.activeEruptionId
+
+    markAllDirty(this.worldState)
+    this.terrainRenderer?.setWorld(this.worldState)
+    this.terrainRenderer?.setHeatmapMode(this.overlayMode)
+    this.terrainRenderer?.setTerrainVisible(this.biomeOverlayEnabled)
+    this.terrainRenderer?.setEventsOverlayEnabled(this.eventsOverlayEnabled)
+    this.terrainRenderer?.renderAll()
+
+    this.lastTerritoryVersion = -1
+    this.updateOverlayNow()
+    this.renderFrameLayers()
+  }
+
+  async hydrateSystemsSnapshot(raw: unknown): Promise<void> {
+    if (this.resetInFlight) {
+      await this.resetInFlight
+    }
+
+    if (raw && typeof raw === 'object') {
+      const root = raw as Record<string, unknown>
+      this.simLog.hydrateState(root.logs)
+      this.metrics.hydrateState(root.metrics)
+    }
+
+    const runtime = this.readRuntimeSystemsSnapshot(raw)
+    if (!runtime) {
+      this.updateOverlayNow()
+      return
+    }
+
+    try {
+      this.rng.setState(runtime.rngState)
+      this.creatureSystem.hydrateState(runtime.creatureSystem)
+
+      if (runtime.craftingSystem) {
+        this.craftingSystem?.hydrateState(runtime.craftingSystem)
+      }
+
+      if (runtime.resourceNodeSystem) {
+        this.resourceNodeSystem?.hydrateState(runtime.resourceNodeSystem)
+      }
+
+      if (runtime.structureSystem) {
+        this.structureSystem?.hydrateState(runtime.structureSystem)
+      }
+
+      this.civSystem.hydrateState(runtime.civSystem, this.worldState, this.creatureSystem.getSpeciesStats())
+      this.eventSystem.hydrateState(runtime.eventSystem)
+      if (runtime.volcanoSystem) {
+        this.volcanoSystem?.hydrateState(runtime.volcanoSystem, this.worldState)
+      }
+
+      this.hiddenCivStructureIds.clear()
+      const hidden = Array.isArray(runtime.hiddenCivStructureIds) ? runtime.hiddenCivStructureIds : []
+      for (let i = 0; i < hidden.length; i++) {
+        const id = hidden[i]
+        if (typeof id !== 'string' || !id) continue
+        this.hiddenCivStructureIds.add(id)
+      }
+
+      this.syncWorldStructuresFromCiv()
+      this.structureRenderer?.setHighlight(null)
+      this.lastTerritoryVersion = -1
+      this.lastTerritoryStride = -1
+      this.updateOverlayNow()
+      this.renderFrameLayers()
+    } catch (error) {
+      console.warn(
+        `[TerrainScene] systems hydration failed: ${error instanceof Error ? error.message : 'unknown'}`,
+      )
+    }
+  }
+
+  private readRuntimeSystemsSnapshot(raw: unknown): TerrainRuntimeSystemsSnapshot | null {
+    if (!raw || typeof raw !== 'object') {
+      return null
+    }
+
+    const root = raw as Record<string, unknown>
+    const maybeRuntime = root.runtime
+    if (!maybeRuntime || typeof maybeRuntime !== 'object') {
+      return null
+    }
+
+    const runtime = maybeRuntime as Partial<TerrainRuntimeSystemsSnapshot>
+    if (
+      typeof runtime.rngState !== 'number' ||
+      !runtime.creatureSystem ||
+      !runtime.civSystem ||
+      !runtime.eventSystem
+    ) {
+      return null
+    }
+
+    return runtime as TerrainRuntimeSystemsSnapshot
+  }
+
+  exportSystemsSnapshot(): TerrainSystemsSnapshot {
+    const snapshot = this.latestSnapshot
+    const factionSummaries = this.civSystem.getFactionSummaries()
+    const factionNameById = new Map<string, string>()
+    for (let i = 0; i < factionSummaries.length; i++) {
+      const row = factionSummaries[i]
+      if (!row) continue
+      factionNameById.set(row.id, row.name)
+    }
+
+    const structureFactionRows = this.civSystem.getFactions().map((faction) => {
+      const materials: Record<string, number> = { ...faction.itemInventory }
+      if (faction.stockpile.wood > 0) {
+        materials.wood = Math.max(materials.wood ?? 0, Math.floor(faction.stockpile.wood))
+      }
+      if (faction.stockpile.stone > 0) {
+        materials.stone = Math.max(materials.stone ?? 0, Math.floor(faction.stockpile.stone))
+      }
+      if (faction.stockpile.ore > 0) {
+        materials.iron_ore = Math.max(materials.iron_ore ?? 0, Math.floor(faction.stockpile.ore))
+      }
+      return {
+        factionId: faction.id,
+        factionName: factionNameById.get(faction.id) ?? faction.name ?? faction.id,
+        techLevel: faction.techLevel,
+        literacyLevel: faction.literacyLevel,
+        materials,
+      }
+    })
+
+    const structureWorldRows = this.structureSystem
+      ? this.structureSystem.getAll().map((structure) => ({
+          id: structure.id,
+          defId: structure.defId,
+          name: this.structureCatalog?.getById(structure.defId)?.name ?? structure.defId,
+          factionId: structure.factionId,
+          factionName: factionNameById.get(structure.factionId) ?? structure.factionId,
+          x: structure.x,
+          y: structure.y,
+          w: structure.w,
+          h: structure.h,
+          state: structure.state,
+          hp: structure.hp,
+          maxHp: structure.maxHp,
+          builtAtTick: structure.builtAtTick,
+        }))
+      : []
+
+    const activeFactionId = this.selectedCivFactionId ?? factionSummaries[0]?.id ?? null
+
+    return deepClone({
+      species: this.creatureSystem.getSpeciesStats(),
+      phylogeny: this.creatureSystem.getSpeciesStats().map((row) => ({
+        speciesId: row.speciesId,
+        lineageIds: row.lineageIds,
+        cognitionStage: row.cognitionStage,
+      })),
+      civs: {
+        factions: factionSummaries,
+        factionsDetailed: structureFactionRows,
+        agents: this.civSystem.getFactionMembers(null, 1200),
+        relations: this.civSystem.getRelationSummaries(),
+        notes: this.civSystem.getNotes(320),
+        religions: this.civSystem.getReligionSummaries(),
+        ethnicities: this.civSystem.getEthnicitySummaries(),
+      },
+      events: {
+        active: this.eventSystem.getActiveEvents(),
+        recent: this.eventSystem.getRecentEvents(),
+        volcanoRecent: this.volcanoSystem?.getRecentEvents() ?? [],
+      },
+      items: {
+        catalog: this.itemCatalog?.items ?? [],
+        recipes: this.craftingSystem?.getRecipes() ?? [],
+        factions: this.civSystem.getItemsSnapshot(this.worldState.tick, this.selectedCivFactionId),
+      },
+      structures: {
+        catalog: this.structureCatalog?.structures ?? [],
+        world: structureWorldRows,
+        factions: structureFactionRows,
+        activeFactionId,
+        worldSize: {
+          width: this.worldState.width,
+          height: this.worldState.height,
+        },
+        civ: this.civSystem.getStructures(),
+      },
+      logs: this.simLog.getEntries(1200),
+      eras: snapshot ? [`tick-${snapshot.tick}`] : [],
+      metrics: this.metrics.exportState(),
+      runtime: {
+        version: 1,
+        rngState: this.rng.getState(),
+        creatureSystem: this.creatureSystem.exportState(),
+        civSystem: this.civSystem.exportState(),
+        eventSystem: this.eventSystem.exportState(),
+        craftingSystem: this.craftingSystem?.exportState() ?? null,
+        resourceNodeSystem: this.resourceNodeSystem?.exportState() ?? null,
+        structureSystem: this.structureSystem?.exportState() ?? null,
+        volcanoSystem: this.volcanoSystem?.exportState() ?? null,
+        hiddenCivStructureIds: Array.from(this.hiddenCivStructureIds.values()),
+      },
+    })
   }
 }

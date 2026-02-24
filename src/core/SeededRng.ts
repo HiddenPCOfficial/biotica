@@ -19,6 +19,17 @@ export class SeededRng {
     }
   }
 
+  getState(): number {
+    return this.state >>> 0
+  }
+
+  setState(state: number): void {
+    this.state = (state | 0) >>> 0
+    if (this.state === 0) {
+      this.state = 0x9e3779b9
+    }
+  }
+
   nextUint(): number {
     let x = this.state
     x ^= x << 13

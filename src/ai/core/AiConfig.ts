@@ -1,11 +1,12 @@
 import type { LlmProviderConfig } from '../llm/LlmClient'
 
-export type LlmProvider = 'ollama' | 'llamaCpp'
+export type LlmProvider = 'ollama' | 'llamaCpp' | 'openai'
 
 export type AiCoreConfig = {
   llm: {
     provider: LlmProvider
     baseUrl: string
+    apiKey?: string
     timeoutMs: number
     minIntervalMs: number
     cacheTtlMs: number
@@ -18,6 +19,7 @@ const DEFAULT_PROVIDER: LlmProvider = 'ollama'
 const DEFAULT_BASE_URL: Record<LlmProvider, string> = {
   ollama: 'http://127.0.0.1:11434',
   llamaCpp: 'http://127.0.0.1:8080',
+  openai: 'https://api.openai.com/v1',
 }
 
 function readEnv(name: string): string | undefined {
@@ -53,6 +55,9 @@ function normalizeProvider(value: string | undefined): LlmProvider {
   if (normalized === 'llama.cpp' || normalized === 'llamacpp' || normalized === 'llama_cpp') {
     return 'llamaCpp'
   }
+  if (normalized === 'openai' || normalized === 'chatgpt' || normalized === 'gpt') {
+    return 'openai'
+  }
   return DEFAULT_PROVIDER
 }
 
@@ -63,11 +68,13 @@ function normalizeBaseUrl(raw: string): string {
 export function readAiCoreConfig(): AiCoreConfig {
   const provider = normalizeProvider(readEnv('VITE_AI_PROVIDER'))
   const baseUrl = normalizeBaseUrl(readEnv('VITE_AI_BASE_URL') ?? DEFAULT_BASE_URL[provider])
+  const apiKey = readEnv('VITE_AI_API_KEY') ?? readEnv('VITE_OPENAI_API_KEY')
 
   return {
     llm: {
       provider,
       baseUrl,
+      apiKey,
       timeoutMs: Math.floor(readNumber('VITE_AI_TIMEOUT_MS', 30000, 1000, 120000)),
       minIntervalMs: Math.floor(readNumber('VITE_AI_MIN_INTERVAL_MS', 250, 0, 60000)),
       cacheTtlMs: Math.floor(readNumber('VITE_AI_CACHE_TTL_MS', 5 * 60 * 1000, 1000, 24 * 60 * 60 * 1000)),
@@ -81,6 +88,7 @@ export function getLlmProviderConfig(config: AiCoreConfig = readAiCoreConfig()):
   return {
     provider: config.llm.provider,
     baseUrl: config.llm.baseUrl,
+    apiKey: config.llm.apiKey,
     timeoutMs: config.llm.timeoutMs,
   }
 }

@@ -13,6 +13,13 @@ export type BuildingStepResult = {
   completed: Structure[]
 }
 
+export type BuildingSystemState = {
+  structures: Structure[]
+  tasks: BuildTask[]
+  structureCounter: number
+  taskCounter: number
+}
+
 type BuildCost = {
   wood: number
   stone: number
@@ -76,6 +83,49 @@ export class BuildingSystem {
       }
     }
     return null
+  }
+
+  exportState(): BuildingSystemState {
+    return {
+      structures: this.structures.map((row) => ({
+        ...row,
+        storage: { ...row.storage },
+      })),
+      tasks: this.tasks.map((row) => ({ ...row })),
+      structureCounter: this.structureCounter,
+      taskCounter: this.taskCounter,
+    }
+  }
+
+  hydrateState(state: BuildingSystemState): void {
+    this.reset()
+    const structures = Array.isArray(state.structures) ? state.structures : []
+    for (let i = 0; i < structures.length; i++) {
+      const row = structures[i]
+      if (!row) continue
+      const structure: Structure = {
+        ...row,
+        x: row.x | 0,
+        y: row.y | 0,
+        storage: { ...row.storage },
+      }
+      this.structures.push(structure)
+      this.structureByPos.set(`${structure.x}:${structure.y}`, structure.id)
+    }
+
+    const tasks = Array.isArray(state.tasks) ? state.tasks : []
+    for (let i = 0; i < tasks.length; i++) {
+      const row = tasks[i]
+      if (!row) continue
+      this.tasks.push({
+        ...row,
+        x: row.x | 0,
+        y: row.y | 0,
+      })
+    }
+
+    this.structureCounter = Math.max(0, state.structureCounter | 0)
+    this.taskCounter = Math.max(0, state.taskCounter | 0)
   }
 
   requestBuild(

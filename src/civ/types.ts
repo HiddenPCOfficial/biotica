@@ -25,6 +25,86 @@ export type AgentGoal =
   | 'EquipItem'
   | 'Write'
 
+export type AgentIntent =
+  | 'explore'
+  | 'gather'
+  | 'hunt'
+  | 'build'
+  | 'fortify'
+  | 'migrate'
+  | 'farm'
+  | 'trade'
+  | 'defend'
+  | 'invent'
+  | 'write'
+  | 'negotiate'
+  | 'expand_territory'
+  | 'domesticate_species'
+
+export type PlanActionType =
+  | 'move_to'
+  | 'observe'
+  | 'gather_resource'
+  | 'hunt_prey'
+  | 'construct'
+  | 'fortify_border'
+  | 'farm_plot'
+  | 'trade_exchange'
+  | 'defend_area'
+  | 'invent_tool'
+  | 'write_record'
+  | 'negotiate_terms'
+  | 'claim_territory'
+  | 'domesticate'
+  | 'relocate_home'
+
+export type StructureBlueprint =
+  | 'hut'
+  | 'storage'
+  | 'palisade'
+  | 'shrine'
+  | 'farm_plot'
+  | 'watch_tower'
+
+export type PlanStatus = 'draft' | 'active' | 'completed' | 'failed'
+
+export type PlanActionStep = {
+  id: string
+  actionType: PlanActionType
+  goal: AgentGoal
+  description: string
+  targetX: number
+  targetY: number
+  targetLabel: string
+  requiredTicks: number
+  elapsedTicks: number
+  completed: boolean
+  structureBlueprint?: StructureBlueprint
+}
+
+export type AgentPlan = {
+  id: string
+  intent: AgentIntent
+  status: PlanStatus
+  createdAtTick: number
+  reasonCodes: ReasonCode[]
+  steps: PlanActionStep[]
+  currentStepIndex: number
+  progress01: number
+}
+
+export type AgentPlanSummary = {
+  id: string
+  intent: AgentIntent
+  status: PlanStatus
+  currentStepIndex: number
+  totalSteps: number
+  progress01: number
+  currentStepDescription: string
+  currentStepActionType: PlanActionType | null
+  currentStepTargetLabel: string
+}
+
 export type AgentActivityState =
   | 'idle'
   | 'moving'
@@ -54,6 +134,13 @@ export type ReasonCode =
   | 'CRAFT_UPGRADE'
   | 'EQUIP_TOOL'
   | 'WRITE_RECORD'
+  | 'MIGRATE_PRESSURE'
+  | 'FORTIFY_BORDER'
+  | 'INVENT_TECH'
+  | 'NEGOTIATE_RELATION'
+  | 'EXPAND_INFLUENCE'
+  | 'DOMESTICATE_NEED'
+  | 'PLAN_CONTINUITY'
 
 export type MentalState = {
   currentGoal: AgentGoal
@@ -66,6 +153,14 @@ export type MentalState = {
   targetX: number
   targetY: number
   targetLabel: string
+  emotionalTone: 'calm' | 'focused' | 'urgent' | 'alarmed'
+}
+
+export type MentalLog = {
+  tick: number
+  thought: string
+  reasonCodes: ReasonCode[]
+  linkedIntent: AgentIntent
 }
 
 export type StructureType =
@@ -175,7 +270,11 @@ export type Agent = {
   lastTalkTick: number
   lastDecisionTick: number
   lastActionTick: number
+  currentIntent: AgentIntent
   currentGoal: AgentGoal
+  proposedPlan: AgentPlan | null
+  activePlan: AgentPlan | null
+  lastAction: string
   activityState: AgentActivityState
   goalTargetX: number
   goalTargetY: number
@@ -188,6 +287,8 @@ export type Agent = {
   currentThought: string
   thoughtGloss?: string
   mentalState: MentalState
+  mentalLogs: MentalLog[]
+  dialogueMemory: string[]
   lastUtteranceTokens: string[]
   lastUtteranceGloss?: string
 }
@@ -376,6 +477,7 @@ export type StructureStorage = {
 export type Structure = {
   id: string
   type: StructureType
+  blueprint?: StructureBlueprint
   x: number
   y: number
   factionId: string
@@ -438,6 +540,7 @@ export type DialogueRecord = {
   topic: string
   utteranceA: string[]
   utteranceB: string[]
+  actionContext: string
   lines: DialogueLine[]
   newTerms: string[]
   glossIt?: string
@@ -512,8 +615,11 @@ export type FactionMemberSummary = {
   hydration: number
   x: number
   y: number
+  currentIntent: AgentIntent
   goal: AgentGoal
   activityState: AgentActivityState
+  lastAction: string
+  activePlan: AgentPlanSummary | null
   inventoryItems: AgentInventoryEntry[]
   equipmentSlots: EquipmentSlots
   maxCarryWeight: number
@@ -585,7 +691,9 @@ export type NarrativeRequest =
         speakerAName: string
         speakerBName: string
         contextSummary: string
+        actionContext: string
         utteranceTokens: string[]
+        recentFactionUtterances: string[]
         communication: CommunicationSummary
       }
     }
@@ -624,6 +732,7 @@ export type CivItemCategory =
   | 'tool'
   | 'weapon'
   | 'food'
+  | 'component'
   | 'structure_part'
   | 'artifact'
 
@@ -718,14 +827,19 @@ export type AgentInspectorData = {
   maxCarryWeight: number
   currentCarryWeight: number
   relationsCount: number
+  currentIntent: AgentIntent
   goal: AgentGoal
   activityState: AgentActivityState
+  lastAction: string
+  proposedPlan: AgentPlanSummary | null
+  activePlan: AgentPlanSummary | null
   vitality: number
   hunger: number
   waterNeed: number
   hazardStress: number
   currentThought: string
   thoughtGloss?: string
+  latestMentalLog?: MentalLog
   mentalState: MentalState
   narrativeBio?: string
   lastUtteranceTokens: string[]

@@ -1,8 +1,9 @@
-export type LlmProvider = 'ollama' | 'llamaCpp'
+export type LlmProvider = 'ollama' | 'llamaCpp' | 'openai'
 
 export type LlmProviderConfig = {
   provider: LlmProvider
   baseUrl: string
+  apiKey?: string
   timeoutMs: number
 }
 
@@ -23,6 +24,10 @@ export type LlmCompletionRequest = {
 
 function normalizeBaseUrl(raw: string): string {
   return raw.replace(/\/+$/, '')
+}
+
+function openAiEndpoint(baseUrl: string): string {
+  return /\/v1$/i.test(baseUrl) ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`
 }
 
 function extractOpenAiText(payload: unknown): string {
@@ -168,19 +173,49 @@ export class LlmClient {
       return this.stream(request)
     }
 
-    return this.providerConfig.provider === 'llamaCpp'
-      ? this.completeWithLlamaCpp(request)
-      : this.completeWithOllama(request)
+    if (this.providerConfig.provider === 'ollama') {
+      return this.completeWithOllama(request)
+    }
+    return this.completeWithOpenAiCompatible(request)
   }
 
   async stream(request: LlmCompletionRequest): Promise<string> {
-    return this.providerConfig.provider === 'llamaCpp'
-      ? this.streamWithLlamaCpp(request)
-      : this.streamWithOllama(request)
+    if (this.providerConfig.provider === 'ollama') {
+      return this.streamWithOllama(request)
+    }
+    return this.streamWithOpenAiCompatible(request)
   }
 
-  private async completeWithLlamaCpp(request: LlmCompletionRequest): Promise<string> {
+  private ensureOpenAiApiKeyIfNeeded(): void {
+    if (this.providerConfig.provider !== 'openai') {
+      return
+    }
+    if (this.providerConfig.apiKey && this.providerConfig.apiKey.trim().length > 0) {
+      return
+    }
+    throw new Error('openai provider selected but VITE_AI_API_KEY is missing')
+  }
+
+  private openAiHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+    const apiKey = this.providerConfig.apiKey?.trim()
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`
+    }
+    return headers
+  }
+
+  private openAiProviderLabel(): string {
+    return this.providerConfig.provider === 'openai' ? 'openai' : 'llama.cpp'
+  }
+
+  private async completeWithOpenAiCompatible(request: LlmCompletionRequest): Promise<string> {
     const baseUrl = normalizeBaseUrl(this.providerConfig.baseUrl)
+    this.ensureOpenAiApiKeyIfNeeded()
+    const endpoint = openAiEndpoint(baseUrl)
+    const providerLabel = this.openAiProviderLabel()
     const controller = new AbortController()
     const timeoutMs = Math.max(1000, this.providerConfig.timeoutMs)
     const timeout = setTimeout(() => controller.abort(`timeout:${timeoutMs}`), timeoutMs)
@@ -188,11 +223,9 @@ export class LlmClient {
     try {
       let response: Response
       try {
-        response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        response = await fetch(endpoint, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: this.openAiHeaders(),
           body: JSON.stringify({
             model: request.model,
             messages: request.messages,
@@ -205,20 +238,20 @@ export class LlmClient {
         })
       } catch (error) {
         if (controller.signal.aborted || isAbortLikeError(error)) {
-          throw timeoutError('llama.cpp', timeoutMs)
+          throw timeoutError(providerLabel, timeoutMs)
         }
         throw error
       }
 
       if (!response.ok) {
         const err = await response.text().catch(() => '')
-        throw new Error(`llama.cpp http ${response.status}: ${err.slice(0, 320)}`)
+        throw new Error(`${providerLabel} http ${response.status}: ${err.slice(0, 320)}`)
       }
 
       const payload = (await response.json()) as unknown
       const text = extractOpenAiText(payload).trim()
       if (!text) {
-        throw new Error('llama.cpp response missing message content')
+        throw new Error(`${providerLabel} response missing message content`)
       }
       return text
     } finally {
@@ -275,8 +308,11 @@ export class LlmClient {
     }
   }
 
-  private async streamWithLlamaCpp(request: LlmCompletionRequest): Promise<string> {
+  private async streamWithOpenAiCompatible(request: LlmCompletionRequest): Promise<string> {
     const baseUrl = normalizeBaseUrl(this.providerConfig.baseUrl)
+    this.ensureOpenAiApiKeyIfNeeded()
+    const endpoint = openAiEndpoint(baseUrl)
+    const providerLabel = this.openAiProviderLabel()
     const controller = new AbortController()
     const timeoutMs = Math.max(1000, this.providerConfig.timeoutMs)
     const timeout = setTimeout(() => controller.abort(`timeout:${timeoutMs}`), timeoutMs)
@@ -285,11 +321,9 @@ export class LlmClient {
     try {
       let response: Response
       try {
-        response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        response = await fetch(endpoint, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: this.openAiHeaders(),
           body: JSON.stringify({
             model: request.model,
             messages: request.messages,
@@ -302,14 +336,14 @@ export class LlmClient {
         })
       } catch (error) {
         if (controller.signal.aborted || isAbortLikeError(error)) {
-          throw timeoutError('llama.cpp stream', timeoutMs)
+          throw timeoutError(`${providerLabel} stream`, timeoutMs)
         }
         throw error
       }
 
       if (!response.ok || !response.body) {
         const err = await response.text().catch(() => '')
-        throw new Error(`llama.cpp stream http ${response.status}: ${err.slice(0, 320)}`)
+        throw new Error(`${providerLabel} stream http ${response.status}: ${err.slice(0, 320)}`)
       }
 
       const reader = response.body.getReader()
@@ -333,7 +367,7 @@ export class LlmClient {
       }
 
       if (!text.trim()) {
-        throw new Error('llama.cpp stream produced empty text')
+        throw new Error(`${providerLabel} stream produced empty text`)
       }
 
       return text

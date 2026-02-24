@@ -10,12 +10,27 @@ export type RecentEventEntry = {
   summary?: string
 }
 
+export type VolcanoAnchor = Readonly<{
+  x: number
+  y: number
+}>
+
+export type VolcanoState = {
+  anchor: VolcanoAnchor
+  minIntervalTicks: number
+  maxIntervalTicks: number
+  maxLavaTiles: number
+  nextEruptionTick: number
+  activeEruptionId: string | null
+}
+
 export type WorldState = TerrainMap & {
   humidity: Uint8Array
   temperature: Uint8Array
   fertility: Uint8Array
   hazard: Uint8Array
   plantBiomass: Uint8Array
+  volcano: VolcanoState
 
   tick: number
 
@@ -48,6 +63,43 @@ function clampByte(value: number): number {
   if (value < 0) return 0
   if (value > 255) return 255
   return value | 0
+}
+
+function isVolcanoCandidate(tile: TileId): boolean {
+  return tile === TileId.Mountain || tile === TileId.Rock || tile === TileId.Hills || tile === TileId.Snow
+}
+
+function isLandTile(tile: TileId): boolean {
+  return tile !== TileId.DeepWater && tile !== TileId.ShallowWater && tile !== TileId.Lava
+}
+
+function pickVolcanoAnchor(tiles: Uint8Array, width: number, height: number, seed: number): VolcanoAnchor {
+  let bestIndex = -1
+  let bestScore = Number.NEGATIVE_INFINITY
+  let firstLand = -1
+
+  const size = width * height
+  for (let i = 0; i < size; i++) {
+    const tile = tiles[i] as TileId
+    if (firstLand === -1 && isLandTile(tile)) {
+      firstLand = i
+    }
+    if (!isVolcanoCandidate(tile)) {
+      continue
+    }
+    const x = i % width
+    const y = (i / width) | 0
+    const score = hash2D(seed ^ 0x51f37a11, x, y)
+    if (score > bestScore) {
+      bestScore = score
+      bestIndex = i
+    }
+  }
+
+  const index = bestIndex >= 0 ? bestIndex : firstLand >= 0 ? firstLand : ((height / 2) | 0) * width + ((width / 2) | 0)
+  const x = index % width
+  const y = (index / width) | 0
+  return Object.freeze({ x, y })
 }
 
 function humidityBase(tile: TileId): number {
@@ -212,6 +264,7 @@ export function createWorldState(
   const chunksY = Math.ceil(height / chunkSize)
   const dirtyChunks = new Uint8Array(chunksX * chunksY)
   dirtyChunks.fill(1)
+  const volcanoAnchor = pickVolcanoAnchor(tiles, width, height, seed)
 
   const state: WorldState = {
     width,
@@ -223,6 +276,14 @@ export function createWorldState(
     fertility,
     hazard,
     plantBiomass,
+    volcano: {
+      anchor: volcanoAnchor,
+      minIntervalTicks: 8000,
+      maxIntervalTicks: 16000,
+      maxLavaTiles: 180,
+      nextEruptionTick: 0,
+      activeEruptionId: null,
+    },
     tick: 0,
     index: (x: number, y: number) => y * width + x,
     inBounds: (x: number, y: number) => x >= 0 && y >= 0 && x < width && y < height,

@@ -81,6 +81,79 @@ export class MetricsCollector {
     return this.samples
   }
 
+  exportState(): MetricSample[] {
+    return this.samples.map((sample) => ({
+      tick: sample.tick,
+      totalPopulation: sample.totalPopulation,
+      biodiversity: sample.biodiversity,
+      avgTemperature: sample.avgTemperature,
+      avgHumidity: sample.avgHumidity,
+      avgFertility: sample.avgFertility,
+      populationBySpecies: { ...sample.populationBySpecies },
+    }))
+  }
+
+  hydrateState(input: unknown): void {
+    if (!Array.isArray(input)) {
+      return
+    }
+
+    this.samples.length = 0
+    for (let i = 0; i < input.length; i++) {
+      const row = input[i] as Partial<MetricSample> | undefined
+      if (!row) continue
+      const tick = row.tick
+      const totalPopulation = row.totalPopulation
+      const biodiversity = row.biodiversity
+      const avgTemperature = row.avgTemperature
+      const avgHumidity = row.avgHumidity
+      const avgFertility = row.avgFertility
+
+      if (
+        typeof tick !== 'number' ||
+        typeof totalPopulation !== 'number' ||
+        typeof biodiversity !== 'number'
+      ) {
+        continue
+      }
+      if (!Number.isFinite(tick) || !Number.isFinite(totalPopulation) || !Number.isFinite(biodiversity)) {
+        continue
+      }
+      if (
+        typeof avgTemperature !== 'number' ||
+        typeof avgHumidity !== 'number' ||
+        typeof avgFertility !== 'number' ||
+        !Number.isFinite(avgTemperature) ||
+        !Number.isFinite(avgHumidity) ||
+        !Number.isFinite(avgFertility)
+      ) {
+        continue
+      }
+
+      const populationBySpecies: Record<string, number> = {}
+      const entries = Object.entries(row.populationBySpecies ?? {})
+      for (let j = 0; j < entries.length; j++) {
+        const [speciesId, amount] = entries[j] ?? []
+        if (!speciesId || typeof amount !== 'number' || !Number.isFinite(amount)) continue
+        populationBySpecies[speciesId] = amount
+      }
+
+      this.samples.push({
+        tick: Math.max(0, Math.floor(tick)),
+        totalPopulation: Math.max(0, Math.floor(totalPopulation)),
+        biodiversity: Math.max(0, Math.floor(biodiversity)),
+        avgTemperature,
+        avgHumidity,
+        avgFertility,
+        populationBySpecies,
+      })
+    }
+
+    if (this.samples.length > this.maxSamples) {
+      this.samples.splice(0, this.samples.length - this.maxSamples)
+    }
+  }
+
   getTopSpeciesSeries(limit = 5): TopSpeciesSeries {
     const speciesScores = new Map<string, number>()
     for (let i = 0; i < this.samples.length; i++) {

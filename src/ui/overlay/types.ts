@@ -4,6 +4,7 @@ export type OverlayTabId =
   | 'species'
   | 'environment'
   | 'worldGenesis'
+  | 'structures'
   | 'civilizations'
   | 'individuals'
   | 'items'
@@ -185,6 +186,26 @@ export type CivMentalState = {
   targetX: number
   targetY: number
   targetLabel: string
+  emotionalTone: 'calm' | 'focused' | 'urgent' | 'alarmed'
+}
+
+export type CivPlanSummary = {
+  id: string
+  intent: string
+  status: string
+  currentStepIndex: number
+  totalSteps: number
+  progress01: number
+  currentStepDescription: string
+  currentStepActionType: string | null
+  currentStepTargetLabel: string
+}
+
+export type CivMentalLog = {
+  tick: number
+  thought: string
+  reasonCodes: string[]
+  linkedIntent: string
 }
 
 export type CivMemberInventoryRow = {
@@ -213,8 +234,11 @@ export type CivMemberRow = {
   hydration: number
   x: number
   y: number
+  currentIntent: string
   goal: string
   activityState: string
+  lastAction: string
+  activePlan: CivPlanSummary | null
   inventoryItems: CivMemberInventoryRow[]
   equipmentSlots: CivEquipmentSlots
   maxCarryWeight: number
@@ -293,6 +317,18 @@ export type CivRelationSeries = {
   points: CivRelationSeriesPoint[]
 }
 
+export type CivStructureRow = {
+  id: string
+  type: string
+  blueprint?: string
+  factionId: string
+  x: number
+  y: number
+  completed: boolean
+  progress: number
+  builtAtTick: number
+}
+
 export type CivSummary = {
   factions: CivFactionRow[]
   wars: number
@@ -309,6 +345,7 @@ export type CivSummary = {
   relations: CivRelationRow[]
   relationSeries: CivRelationSeries[]
   interactionEdges: CivInteractionEdge[]
+  structures: CivStructureRow[]
   speciesLinks: Record<
     string,
     {
@@ -323,6 +360,7 @@ export type ItemCategory =
   | 'tool'
   | 'weapon'
   | 'food'
+  | 'component'
   | 'structure_part'
   | 'artifact'
 
@@ -375,6 +413,105 @@ export type GroundItemRow = {
   ageTicks: number
 }
 
+export type MaterialCatalogRow = {
+  id: string
+  category: 'raw' | 'processed'
+  hardness: number
+  heatResistance: number
+  lavaResistance: number
+  hazardResistance: number
+  rarity: number
+  allowedBiomes: number[]
+}
+
+export type ResourceNodeDensity = {
+  totalNodes: number
+  treeNodes: number
+  stoneNodes: number
+  ironNodes: number
+  clayNodes: number
+  totalRemainingAmount: number
+}
+
+export type ResourceNodeRow = {
+  id: string
+  type: 'tree' | 'stone_vein' | 'iron_vein' | 'clay_patch'
+  x: number
+  y: number
+  amount: number
+  regenRate: number
+  requiredToolTag?: string
+  yieldsMaterialId: string
+}
+
+export type StructureCatalogCostRow = {
+  materialId: string
+  amount: number
+}
+
+export type StructureCatalogRow = {
+  id: string
+  name: string
+  size: { w: number; h: number }
+  requiredTechLevel: number
+  buildCost: StructureCatalogCostRow[]
+  utilityTags: string[]
+  heatResistance: number
+  lavaResistance: number
+  hazardResistance: number
+}
+
+export type StructureBuildableRow = {
+  id: string
+  name: string
+  requiredTechLevel: number
+  unlocked: boolean
+  missingMaterials: string[]
+}
+
+export type StructureWorldRow = {
+  id: string
+  defId: string
+  name: string
+  factionId: string
+  x: number
+  y: number
+  w: number
+  h: number
+  state: 'building' | 'active' | 'damaged' | 'abandoned'
+  hp: number
+  maxHp: number
+  builtAtTick: number
+}
+
+export type SelectedStructureSummary = {
+  id: string
+  defId: string
+  name: string
+  ownerFactionId: string
+  x: number
+  y: number
+  w: number
+  h: number
+  state: 'building' | 'active' | 'damaged' | 'abandoned'
+  hp: number
+  maxHp: number
+  utilityTags: string[]
+  buildCost: StructureCatalogCostRow[]
+  heatResistance: number
+  lavaResistance: number
+  hazardResistance: number
+}
+
+export type VolcanoSummary = {
+  anchorX: number
+  anchorY: number
+  nextEruptionTick: number
+  activeEruptionId: string | null
+  minIntervalTicks: number
+  maxIntervalTicks: number
+}
+
 export type ItemsSummary = {
   catalogSeed: number
   catalogCreatedAtMs: number
@@ -385,6 +522,14 @@ export type ItemsSummary = {
   craftableItems: CraftableItemRow[]
   factionInventory: FactionInventoryItemRow[]
   groundItems: GroundItemRow[]
+  materialsCatalog: MaterialCatalogRow[]
+  resourcesDensity: ResourceNodeDensity
+  resourceNodes: ResourceNodeRow[]
+  structuresCatalog: StructureCatalogRow[]
+  structuresBuildable: StructureBuildableRow[]
+  structuresWorld: StructureWorldRow[]
+  selectedStructure: SelectedStructureSummary | null
+  volcano: VolcanoSummary | null
 }
 
 export type LogEntry = {
@@ -408,8 +553,12 @@ export type SelectedAgentSummary = {
   factionId: string
   factionName: string
   role: string
+  currentIntent: string
   goal: string
   activityState: string
+  lastAction: string
+  proposedPlan: CivPlanSummary | null
+  activePlan: CivPlanSummary | null
   energy: number
   hydration: number
   age: number
@@ -439,6 +588,7 @@ export type SelectedAgentSummary = {
   maxCarryWeight: number
   currentCarryWeight: number
   mentalState: CivMentalState
+  latestMentalLog?: CivMentalLog
   utteranceTokens: string[]
   utteranceGloss?: string
   thoughtGloss?: string
@@ -472,7 +622,7 @@ export type AiChatContextInspector = {
 }
 
 export type AiChatSummary = {
-  provider: 'ollama' | 'llamaCpp' | 'offline'
+  provider: 'ollama' | 'llamaCpp' | 'openai' | 'offline'
   busy: boolean
   followSelection: boolean
   explainMode: boolean
@@ -526,6 +676,7 @@ export type OverlayActionName =
   | 'playPause'
   | 'speedDown'
   | 'speedUp'
+  | 'saveWorld'
   | 'reset'
   | 'toggleOverlay'
   | 'setTuningParam'
@@ -541,6 +692,7 @@ export type OverlayActionName =
   | 'aiChatSetFollowSelection'
   | 'aiChatSetExplainMode'
   | 'aiChatJumpToReference'
+  | 'dismantleStructure'
 
 export type OverlayActionPayload =
   | undefined
@@ -583,6 +735,9 @@ export type OverlayActionPayload =
   | {
       referenceType: string
       id: string
+    }
+  | {
+      structureId: string
     }
 
 export type OverlayActionHandler = (

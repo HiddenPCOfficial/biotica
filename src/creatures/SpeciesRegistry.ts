@@ -27,6 +27,28 @@ type SpeciesRecord = {
   sizeClass: SpeciesSizeClass
 }
 
+export type SpeciesRegistryState = {
+  seed: number
+  nextSpeciesIndex: number
+  records: Array<{
+    id: string
+    commonName: string
+    color: string
+    traits: string[]
+    promptStyle: string
+    allowedBiomes: number[]
+    createdAtTick: number
+    population: number
+    centroidGenome: Genome
+    centroidSamples: number
+    parentSpeciesId: string | null
+    lineageIds: string[]
+    habitatHint: SpeciesHabitatHint
+    dietType: 0 | 1 | 2
+    sizeClass: SpeciesSizeClass
+  }>
+}
+
 type AssignResult = {
   speciesId: string
   created: boolean
@@ -342,6 +364,76 @@ export class SpeciesRegistry {
       return '-'
     }
     return genomeSummary(rec.centroidGenome)
+  }
+
+  exportState(): SpeciesRegistryState {
+    const records = Array.from(this.species.values())
+      .map((record) => ({
+        id: record.id,
+        commonName: record.commonName,
+        color: record.color,
+        traits: [...record.traits],
+        promptStyle: record.promptStyle,
+        allowedBiomes: [...record.allowedBiomes],
+        createdAtTick: record.createdAtTick,
+        population: record.population,
+        centroidGenome: cloneGenome(record.centroidGenome),
+        centroidSamples: record.centroidSamples,
+        parentSpeciesId: record.parentSpeciesId,
+        lineageIds: [...record.lineageIds],
+        habitatHint: record.habitatHint,
+        dietType: record.dietType,
+        sizeClass: record.sizeClass,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id))
+
+    return {
+      seed: this.seed | 0,
+      nextSpeciesIndex: this.nextSpeciesIndex | 0,
+      records,
+    }
+  }
+
+  hydrateState(state: SpeciesRegistryState): void {
+    this.seed = state.seed | 0
+    this.species.clear()
+    this.nextSpeciesIndex = Math.max(0, state.nextSpeciesIndex | 0)
+
+    const rows = Array.isArray(state.records) ? state.records : []
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
+      if (!row || !row.id) continue
+      const record: SpeciesRecord = {
+        id: row.id,
+        commonName: row.commonName || row.id,
+        color: row.color || '#88a2cc',
+        traits: Array.isArray(row.traits) ? [...row.traits] : [],
+        promptStyle: row.promptStyle || 'tono scientifico',
+        allowedBiomes: (Array.isArray(row.allowedBiomes) ? row.allowedBiomes : []).map((tile) => tile as TileId),
+        createdAtTick: Number.isFinite(row.createdAtTick) ? row.createdAtTick : 0,
+        population: Number.isFinite(row.population) ? row.population : 0,
+        centroidGenome: cloneGenome(row.centroidGenome),
+        centroidSamples: Number.isFinite(row.centroidSamples) ? Math.max(1, row.centroidSamples | 0) : 1,
+        parentSpeciesId: row.parentSpeciesId ?? null,
+        lineageIds: Array.isArray(row.lineageIds) ? [...row.lineageIds] : [row.id],
+        habitatHint: row.habitatHint,
+        dietType: row.dietType,
+        sizeClass: row.sizeClass,
+      }
+      this.species.set(record.id, record)
+    }
+
+    if (this.species.size > 0) {
+      let maxIndex = 0
+      for (const id of this.species.keys()) {
+        const tokens = id.split('-')
+        const tail = Number(tokens[tokens.length - 1])
+        if (Number.isFinite(tail) && tail >= maxIndex) {
+          maxIndex = tail + 1
+        }
+      }
+      this.nextSpeciesIndex = Math.max(this.nextSpeciesIndex, maxIndex)
+    }
   }
 
   private getLineageNames(lineageIds: readonly string[]): string[] {

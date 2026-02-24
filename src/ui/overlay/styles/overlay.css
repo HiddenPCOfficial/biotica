@@ -142,6 +142,12 @@
   background: rgba(21, 33, 54, 0.35);
 }
 
+.bi-ov-btn-danger {
+  background: linear-gradient(180deg, rgba(170, 62, 62, 0.42), rgba(95, 32, 32, 0.42));
+  border-color: rgba(255, 166, 166, 0.4);
+  color: #ffe9e9;
+}
+
 .bi-ov-layout {
   min-height: 0;
   display: grid;

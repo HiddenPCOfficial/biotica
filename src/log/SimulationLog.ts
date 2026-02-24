@@ -41,6 +41,11 @@ export type LogDetails = {
   meta?: Record<string, unknown>
 }
 
+export type SimulationLogState = {
+  entries: LogEntry[]
+  nextId: number
+}
+
 /**
  * Ring buffer per log simulazione.
  */
@@ -153,5 +158,78 @@ export class SimulationLog {
 
     out.reverse()
     return out
+  }
+
+  exportState(limit = this.buffer.length): SimulationLogState {
+    return {
+      entries: this.getEntries(limit).map((entry) => ({
+        ...entry,
+        position: entry.position ? { ...entry.position } : undefined,
+        meta: entry.meta ? { ...entry.meta } : undefined,
+      })),
+      nextId: this.nextId,
+    }
+  }
+
+  hydrateState(input: unknown): void {
+    const rows = Array.isArray(input)
+      ? input
+      : input && typeof input === 'object' && Array.isArray((input as SimulationLogState).entries)
+        ? (input as SimulationLogState).entries
+        : null
+
+    if (!rows) {
+      return
+    }
+
+    const nextIdHint =
+      input && typeof input === 'object' && Number.isFinite((input as SimulationLogState).nextId)
+        ? (input as SimulationLogState).nextId
+        : 1
+
+    this.clear()
+    let maxSeenId = 0
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] as Partial<LogEntry> | undefined
+      if (!row || typeof row.message !== 'string' || !row.category) continue
+      const rowId = row.id
+      const rowTick = row.tick
+      const rowTime = row.time
+      if (
+        typeof rowId !== 'number' ||
+        typeof rowTick !== 'number' ||
+        typeof rowTime !== 'number' ||
+        !Number.isFinite(rowId) ||
+        !Number.isFinite(rowTick) ||
+        !Number.isFinite(rowTime)
+      ) {
+        continue
+      }
+
+      const entry: LogEntry = {
+        id: Math.max(1, Math.floor(rowId)),
+        tick: Math.max(0, Math.floor(rowTick)),
+        time: Math.floor(rowTime),
+        level: row.level ?? 'info',
+        severity: row.severity ?? row.level ?? 'info',
+        category: row.category,
+        message: row.message,
+        position: row.position
+          ? { x: Math.floor(row.position.x), y: Math.floor(row.position.y) }
+          : undefined,
+        subjectId: typeof row.subjectId === 'string' ? row.subjectId : undefined,
+        factionId: typeof row.factionId === 'string' ? row.factionId : undefined,
+        payload: row.payload,
+        meta: row.meta ? { ...row.meta } : undefined,
+      }
+
+      maxSeenId = Math.max(maxSeenId, entry.id)
+      this.buffer[this.cursor] = entry
+      this.cursor = (this.cursor + 1) % this.buffer.length
+      this.size = Math.min(this.buffer.length, this.size + 1)
+    }
+
+    this.nextId = Math.max(1, Math.floor(nextIdHint), maxSeenId + 1)
   }
 }

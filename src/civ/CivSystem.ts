@@ -2,20 +2,28 @@ import { SeededRng } from '../core/SeededRng'
 import { TileId } from '../game/enums/TileId'
 import { CraftingEvolutionSystem } from '../items/CraftingEvolutionSystem'
 import { ItemCatalog, type FrozenItemDefinition } from '../items/ItemCatalog'
+import type { ResourceNodeSystem } from '../resources/ResourceNodeSystem'
 import type { SpeciesStat } from '../creatures/types'
 import type { WorldState } from '../world/WorldState'
-import { BuildingSystem } from './BuildingSystem'
+import { BuildingSystem, type BuildingSystemState } from './BuildingSystem'
+import { CooldownIntentManager } from './CooldownIntentManager'
 import { CommunicationSystem } from './CommunicationSystem'
 import { CulturalEvolutionSystem } from './CulturalEvolutionSystem'
 import { DecisionSystem } from './DecisionSystem'
+import { DialogueActionBinding } from './DialogueActionBinding'
 import { EthnicitySystem } from './EthnicitySystem'
 import { IdentityEvolutionSystem } from './IdentityEvolutionSystem'
+import { IntentionSystem } from './IntentionSystem'
+import { PlanSystem } from './PlanSystem'
+import { StructureSystem } from './StructureSystem'
 import { TerritorySystem } from './TerritorySystem'
 import type {
   Agent,
   AgentGoal,
+  AgentIntent,
   AgentInventoryEntry,
   AgentInspectorData,
+  AgentPlan,
   AgentRole,
   CivFactionInventoryRow,
   CivGroundItemRow,
@@ -34,13 +42,15 @@ import type {
   FactionSummary,
   EquipmentSlots,
   Inventory,
+  MentalLog,
   Note,
   NarrativeRequest,
   GroundItemStack,
   Religion,
   ReligionSummary,
+  ReasonCode,
   Structure,
-  StructureType,
+  StructureBlueprint,
   TerritoryMapSnapshot,
   TerritorySummary,
   UtteranceTranslation,
@@ -75,29 +85,30 @@ function defaultInventory(): Inventory {
   return { food: 30, wood: 12, stone: 8, ore: 2 }
 }
 
-function structureForRole(role: AgentRole): StructureType {
-  switch (role) {
-    case 'Farmer':
-      return 'FarmPlot'
-    case 'Builder':
-      return 'House'
-    case 'Guard':
-      return 'WatchTower'
-    case 'Leader':
-    case 'Elder':
-      return 'Temple'
-    case 'Scribe':
-      return 'Storage'
-    case 'Trader':
-      return 'Storage'
-    case 'Scout':
-    default:
-      return 'Camp'
-  }
-}
-
 function roleByIndex(index: number): AgentRole {
   return ROLE_ORDER[index % ROLE_ORDER.length] ?? 'Scout'
+}
+
+function defaultIntentByRole(role: AgentRole): AgentIntent {
+  switch (role) {
+    case 'Farmer':
+      return 'farm'
+    case 'Builder':
+      return 'build'
+    case 'Guard':
+      return 'defend'
+    case 'Scribe':
+      return 'write'
+    case 'Trader':
+      return 'trade'
+    case 'Leader':
+      return 'negotiate'
+    case 'Elder':
+      return 'build'
+    case 'Scout':
+    default:
+      return 'explore'
+  }
 }
 
 function agentNameFromSeed(seed: number, index: number): string {
@@ -227,6 +238,46 @@ function decrementItemInventory(
   return true
 }
 
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+type SerializableKnowledgeMap = {
+  discovered: number[]
+  fertilityModel: number[]
+  hazardModel: number[]
+}
+
+type SerializableFaction = Omit<Faction, 'knowledgeMap'> & {
+  knowledgeMap: SerializableKnowledgeMap
+}
+
+export type CivSystemState = {
+  factions: SerializableFaction[]
+  ethnicities: Ethnicity[]
+  religions: Religion[]
+  speciesCivFounded: string[]
+  pendingIdentityNarrativeByFaction: string[]
+  pendingReligionNarrativeByFaction: string[]
+  agents: Agent[]
+  timeline: CivTimelineEntry[]
+  dialogues: DialogueRecord[]
+  metrics: CivMetricsPoint[]
+  pendingNarratives: NarrativeRequest[]
+  groundItems: GroundItemStack[]
+  groundItemCounter: number
+  lastGroundSpawnTick: number
+  notes: Note[]
+  noteCounter: number
+  factionCounter: number
+  agentCounter: number
+  timelineCounter: number
+  dialogueCounter: number
+  itemRngState: number
+  building: BuildingSystemState
+  cooldowns: Record<string, Record<string, number>>
+}
+
 type Bounds = {
   minX: number
   minY: number
@@ -244,7 +295,12 @@ type Bounds = {
 export class CivSystem {
   private readonly decisionSystem = new DecisionSystem()
   private readonly buildingSystem = new BuildingSystem()
+  private readonly structureSystem = new StructureSystem(this.buildingSystem)
   private readonly communicationSystem = new CommunicationSystem()
+  private readonly intentionSystem = new IntentionSystem()
+  private readonly planSystem = new PlanSystem()
+  private readonly cooldownIntentManager = new CooldownIntentManager()
+  private readonly dialogueActionBinding = new DialogueActionBinding()
   private readonly territorySystem: TerritorySystem
   private readonly culturalEvolutionSystem = new CulturalEvolutionSystem()
   private readonly ethnicitySystem: EthnicitySystem
@@ -279,6 +335,7 @@ export class CivSystem {
 
   private itemCatalog: ItemCatalog | null = null
   private craftingSystem: CraftingEvolutionSystem | null = null
+  private resourceNodeSystem: ResourceNodeSystem | null = null
   private readonly groundItems: GroundItemStack[] = []
   private readonly groundItemById = new Map<string, GroundItemStack>()
   private groundItemCounter = 0
@@ -308,6 +365,10 @@ export class CivSystem {
     this.craftingSystem = craftingSystem
   }
 
+  setResourceNodeSystem(resourceNodeSystem: ResourceNodeSystem | null): void {
+    this.resourceNodeSystem = resourceNodeSystem
+  }
+
   reset(
     world: WorldState,
     rng: SeededRng,
@@ -335,6 +396,7 @@ export class CivSystem {
     this.pendingNarratives.length = 0
     this.pendingNarrativeKeys.clear()
     this.buildingSystem.reset()
+    this.cooldownIntentManager.clearAll()
     this.groundItems.length = 0
     this.groundItemById.clear()
     this.groundItemCounter = 0
@@ -444,8 +506,80 @@ export class CivSystem {
       const canTalk = tick - agent.lastTalkTick > 120
       const hasTradePartner = this.factions.length > 1
       const decisionFeatures = this.computeDecisionFeatures(agent, faction)
+      const perceptionIdx = world.index(agent.x, agent.y)
+      const localHazard = (world.hazard[perceptionIdx] ?? 0) / 255
+      const localFertility = (world.fertility[perceptionIdx] ?? 0) / 255
+      const localHumidity = (world.humidity[perceptionIdx] ?? 0) / 255
 
-      if (tick - agent.lastDecisionTick >= 3) {
+      const activeStepBeforeDecision = this.planSystem.getCurrentStep(agent.activePlan)
+      const shouldRefreshPlan =
+        !agent.activePlan ||
+        agent.activePlan.status !== 'active' ||
+        !activeStepBeforeDecision ||
+        tick - agent.lastDecisionTick >= 12 ||
+        (agent.hunger > 0.72 && agent.currentIntent !== 'gather' && agent.currentIntent !== 'farm') ||
+        (agent.waterNeed > 0.72 && agent.currentIntent !== 'migrate')
+
+      if (shouldRefreshPlan) {
+        const intentSelection = this.intentionSystem.selectIntent(
+          {
+            tick,
+            agent,
+            faction,
+            hunger: agent.hunger,
+            waterNeed: agent.waterNeed,
+            hazard: localHazard,
+            fertility: localFertility,
+            humidity: localHumidity,
+            canBuild,
+            hasTradePartner,
+            inventoryRichness: decisionFeatures.inventoryRichness,
+            nearResourceNode: decisionFeatures.nearResourceNode,
+          },
+          rng,
+          (intent) => this.cooldownIntentManager.getPenalty(agent.id, intent, tick),
+        )
+
+        const plan = this.planSystem.createPlan({
+          tick,
+          world,
+          faction,
+          agent,
+          intent: intentSelection.intent,
+          reasonCodes: intentSelection.reasonCodes,
+          rng,
+        })
+
+        agent.currentIntent = intentSelection.intent
+        agent.proposedPlan = this.clonePlan(plan)
+        agent.activePlan = plan
+        const firstStep = plan.steps[0]
+        if (firstStep) {
+          agent.currentThought = `Intent ${intentSelection.intent}: ${firstStep.description}.`
+        }
+        agent.mentalState.lastReasonCodes = [...intentSelection.reasonCodes]
+        agent.mentalState.emotionalTone = intentSelection.emotionalTone
+        agent.mentalState.currentGoal = plan.steps[0]?.goal ?? 'Explore'
+        this.cooldownIntentManager.markUsed(
+          agent.id,
+          intentSelection.intent,
+          tick,
+          1 + faction.stress * 0.5,
+        )
+        this.pushMentalLog(agent, tick, intentSelection.intent, intentSelection.reasonCodes)
+        agent.lastDecisionTick = tick
+      }
+
+      const activeStep = this.planSystem.getCurrentStep(agent.activePlan)
+      if (activeStep) {
+        agent.currentGoal = activeStep.goal
+        agent.goalTargetX = activeStep.targetX
+        agent.goalTargetY = activeStep.targetY
+        agent.mentalState.currentGoal = activeStep.goal
+        agent.mentalState.targetX = activeStep.targetX
+        agent.mentalState.targetY = activeStep.targetY
+        agent.mentalState.targetLabel = activeStep.targetLabel
+      } else if (tick - agent.lastDecisionTick >= 3) {
         const decision = this.decisionSystem.decide(
           agent,
           {
@@ -494,35 +628,87 @@ export class CivSystem {
       agent.waterNeed = clamp(1 - agent.hydration / 100, 0, 1)
       agent.energy -= agent.waterNeed * 1.5
 
+      const currentPlanStep = this.planSystem.getCurrentStep(agent.activePlan)
+      let actionSucceeded = false
+      let planProgressDelta = moved ? 1 : 0
+      let intentReward = moved ? 0.01 : -0.01
+      let actionDescription = moved
+        ? `si sposta verso ${agent.goalTargetX},${agent.goalTargetY}`
+        : 'resta in osservazione'
+
       if (agent.currentGoal === 'Gather' || agent.currentGoal === 'Farm') {
         agent.activityState = agent.currentGoal === 'Farm' ? 'farming' : 'gathering'
-        const gain = 2.1 + fertility * (agent.role === 'Farmer' ? 3.5 : 2.2)
-        agent.energy += gain
-        faction.stockpile.food += gain * 0.6
-        world.fertility[idx] = clampByte((world.fertility[idx] ?? 0) - 1)
+
+        if (agent.currentGoal === 'Gather' && this.resourceNodeSystem) {
+          const toolTags = this.resolveEquippedToolTags(agent)
+          const harvest = this.resourceNodeSystem.harvestAt(
+            agent.x,
+            agent.y,
+            toolTags,
+            0.8 + agent.traits.diligence * 1.2,
+          )
+
+          if (harvest.ok && harvest.materialId) {
+            this.applyHarvestToFaction(agent, faction, harvest.materialId, harvest.harvestedAmount)
+            this.syncAgentCarryState(agent)
+            actionSucceeded = true
+            changed = true
+            planProgressDelta += 2
+            intentReward += 0.12
+            actionDescription = `estrae ${harvest.harvestedAmount} ${harvest.materialId}`
+          } else if (harvest.reason === 'tool_required') {
+            actionDescription = `non puo estrarre: serve ${harvest.requiredToolTag}`
+            intentReward -= 0.03
+          } else {
+            const gain = 1.5 + fertility * 1.8
+            agent.energy += gain
+            faction.stockpile.food += gain * 0.5
+            world.fertility[idx] = clampByte((world.fertility[idx] ?? 0) - 1)
+            actionSucceeded = true
+            planProgressDelta += 1
+            intentReward += 0.04
+            actionDescription = 'foraggia risorse alimentari'
+          }
+        } else {
+          const gain = 2.1 + fertility * (agent.role === 'Farmer' ? 3.5 : 2.2)
+          agent.energy += gain
+          faction.stockpile.food += gain * 0.6
+          world.fertility[idx] = clampByte((world.fertility[idx] ?? 0) - 1)
+          actionSucceeded = true
+          planProgressDelta += 2
+          intentReward += 0.11
+          actionDescription = agent.currentGoal === 'Farm' ? 'coltiva il campo' : 'raccoglie risorse'
+        }
       } else if (agent.currentGoal === 'Build') {
         agent.activityState = 'building'
-        const buildType = structureForRole(agent.role)
-        if (rng.chance(0.18)) {
-          const req = this.buildingSystem.requestBuild(
+        const blueprint = currentPlanStep?.structureBlueprint ?? this.resolveBlueprintForAgentIntent(agent)
+        if (rng.chance(0.22)) {
+          const req = this.structureSystem.requestBuild({
             faction,
-            buildType,
-            agent.goalTargetX,
-            agent.goalTargetY,
+            blueprint,
+            x: agent.goalTargetX,
+            y: agent.goalTargetY,
             world,
             tick,
-          )
+          })
 
           if (req.accepted && req.structure) {
             changed = true
+            actionSucceeded = true
+            planProgressDelta += 2
+            intentReward += 0.14
+            actionDescription = `costruisce ${this.structureSystem.resolveLabel(req.blueprint)}`
             this.addTimeline({
               tick,
               category: 'build',
               factionId: faction.id,
-              message: `${this.getFactionDisplayName(faction)} avvia ${req.structure.type}`,
+              message: `${this.getFactionDisplayName(faction)} avvia ${this.structureSystem.resolveLabel(req.blueprint)}`,
               x: req.structure.x,
               y: req.structure.y,
             })
+          } else {
+            intentReward -= 0.03
+            actionDescription = 'prova a costruire senza successo'
           }
         }
       } else if (agent.currentGoal === 'PickItem') {
@@ -530,6 +716,10 @@ export class CivSystem {
         const pickedAmount = this.handlePickItemAction(agent, faction, tick)
         if (pickedAmount > 0) {
           changed = true
+          actionSucceeded = true
+          planProgressDelta += 1
+          intentReward += 0.07
+          actionDescription = `raccoglie item x${pickedAmount}`
           this.decisionSystem.applyReward(
             agent.id,
             'PickItem',
@@ -538,54 +728,83 @@ export class CivSystem {
           )
         } else {
           this.decisionSystem.applyReward(agent.id, 'PickItem', -0.05, decisionFeatures)
+          intentReward -= 0.03
         }
       } else if (agent.currentGoal === 'UseItem') {
         agent.activityState = 'crafting'
         const useResult = this.handleUseItemAction(agent, faction, hazard)
         if (useResult.used) {
+          actionSucceeded = true
+          planProgressDelta += 1
+          intentReward += 0.05
+          actionDescription = 'usa un item per migliorare resa/sicurezza'
           this.decisionSystem.applyReward(agent.id, 'UseItem', useResult.reward, decisionFeatures)
         } else {
           this.decisionSystem.applyReward(agent.id, 'UseItem', -0.06, decisionFeatures)
+          intentReward -= 0.02
         }
       } else if (agent.currentGoal === 'CraftItem') {
         agent.activityState = 'crafting'
         const craftResult = this.handleCraftItemAction(agent, faction, tick)
         if (craftResult.crafted) {
           changed = true
+          actionSucceeded = true
+          planProgressDelta += 2
+          intentReward += 0.12
+          actionDescription = 'inventa e produce nuovo oggetto'
           this.decisionSystem.applyReward(agent.id, 'CraftItem', craftResult.reward, decisionFeatures)
         } else {
           this.decisionSystem.applyReward(agent.id, 'CraftItem', craftResult.reward, decisionFeatures)
+          intentReward -= 0.02
         }
       } else if (agent.currentGoal === 'EquipItem') {
         agent.activityState = 'crafting'
         const equipped = this.handleEquipItemAction(agent, faction)
         if (equipped) {
+          actionSucceeded = true
+          planProgressDelta += 1
+          intentReward += 0.04
+          actionDescription = 'equipaggia uno strumento'
           this.decisionSystem.applyReward(agent.id, 'EquipItem', 0.13, decisionFeatures)
         } else {
           this.decisionSystem.applyReward(agent.id, 'EquipItem', -0.04, decisionFeatures)
+          intentReward -= 0.02
         }
-      } else if (agent.currentGoal === 'Talk' && canTalk) {
+      } else if (agent.currentGoal === 'Talk' && canTalk && agent.activePlan && agent.activePlan.status === 'active') {
         agent.activityState = 'talking'
         const partner = this.pickTalkPartner(agent, faction.id, rng)
-        if (partner) {
+        if (partner && this.createDialogueRecord(tick, faction.id, agent, partner, world, rng)) {
           talks++
-          this.createDialogueRecord(tick, faction.id, agent, partner, world, rng)
           agent.lastTalkTick = tick
           partner.lastTalkTick = tick
+          actionSucceeded = true
+          planProgressDelta += 1
+          intentReward += 0.08
+          actionDescription = `coordina il piano con ${partner.name}`
         }
       } else if (agent.currentGoal === 'Trade') {
         agent.activityState = 'trading'
         if (this.applyTrade(agent, faction, rng, tick)) {
+          actionSucceeded = true
+          planProgressDelta += 2
+          intentReward += 0.08
+          actionDescription = 'esegue uno scambio'
           this.addTimeline({
             tick,
             category: 'trade',
             factionId: faction.id,
             message: `${this.getFactionDisplayName(faction)} conclude uno scambio locale`,
           })
+        } else {
+          intentReward -= 0.03
         }
       } else if (agent.currentGoal === 'Worship') {
         agent.activityState = 'worshipping'
         faction.stress = clamp(faction.stress - 0.01, 0, 1)
+        actionSucceeded = true
+        planProgressDelta += 1
+        intentReward += 0.02
+        actionDescription = 'esegue un rito comunitario'
         if (rng.chance(0.08)) {
           this.addTimeline({
             tick,
@@ -598,15 +817,59 @@ export class CivSystem {
         }
       } else if (agent.currentGoal === 'Defend') {
         agent.activityState = 'defending'
+        actionSucceeded = true
+        planProgressDelta += 1
+        intentReward += 0.06
+        actionDescription = 'presidia il perimetro'
       } else if (agent.currentGoal === 'Write') {
         agent.activityState = 'writing'
         if (this.handleWriteAction(agent, faction, tick, rng)) {
           notesWritten += 1
           changed = true
+          actionSucceeded = true
+          planProgressDelta += 2
+          intentReward += 0.13
+          actionDescription = 'scrive note strategiche'
           this.decisionSystem.applyReward(agent.id, 'Write', 0.16, decisionFeatures)
         } else {
           this.decisionSystem.applyReward(agent.id, 'Write', -0.04, decisionFeatures)
+          intentReward -= 0.02
         }
+      }
+
+      if (currentPlanStep && agent.activePlan) {
+        const atPlanTarget =
+          agent.x === currentPlanStep.targetX &&
+          agent.y === currentPlanStep.targetY
+        const relocationStep = currentPlanStep.actionType === 'relocate_home'
+        this.planSystem.applyStepOutcome(agent.activePlan, {
+          success: actionSucceeded,
+          progressDelta: Math.max(1, planProgressDelta),
+          atTarget: atPlanTarget,
+        })
+
+        if (relocationStep && atPlanTarget) {
+          if (faction.homeCenterX !== agent.x || faction.homeCenterY !== agent.y) {
+            faction.homeCenterX = agent.x
+            faction.homeCenterY = agent.y
+            changed = true
+            this.addTimeline({
+              tick,
+              category: 'foundation',
+              factionId: faction.id,
+              message: `${this.getFactionDisplayName(faction)} migra il centro civico a (${agent.x}, ${agent.y})`,
+              x: agent.x,
+              y: agent.y,
+            })
+          }
+        }
+      }
+
+      this.intentionSystem.applyReward(agent.id, agent.currentIntent, intentReward)
+      agent.lastAction = actionDescription
+      if (agent.activePlan?.status === 'completed') {
+        agent.proposedPlan = null
+        agent.activePlan = null
       }
 
       const ageLoad = clamp(agent.age / 820, 0, 1)
@@ -623,7 +886,7 @@ export class CivSystem {
       agent.waterNeed = waterNeed
       agent.hazardStress = hazardStress
       agent.vitality = vitality
-      agent.currentThought = deterministicAgentThought(
+      const thoughtBase = deterministicAgentThought(
         agent.currentGoal,
         agent.role,
         this.getFactionDisplayName(faction),
@@ -632,10 +895,19 @@ export class CivSystem {
         hazardStress,
         fertility,
       )
+      agent.currentThought = `${thoughtBase} Azione: ${agent.lastAction}.`
       agent.mentalState.lastAction = agent.activityState
       agent.mentalState.perceivedFoodLevel = clamp(fertility * 0.55 + (1 - hunger) * 0.45, 0, 1)
       agent.mentalState.perceivedThreatLevel = clamp(hazard * 0.7 + faction.stress * 0.3, 0, 1)
       agent.mentalState.stressLevel = clamp(hunger * 0.3 + waterNeed * 0.28 + hazardStress * 0.42, 0, 1)
+      agent.mentalState.emotionalTone =
+        agent.mentalState.stressLevel > 0.72
+          ? 'alarmed'
+          : agent.mentalState.stressLevel > 0.52
+            ? 'urgent'
+            : agent.activityState === 'building' || agent.activityState === 'writing'
+              ? 'focused'
+              : 'calm'
       agent.mentalState.loyaltyToFaction = clamp(
         agent.mentalState.loyaltyToFaction +
           (faction.cultureParams.collectivism - 0.5) * 0.012 +
@@ -672,6 +944,8 @@ export class CivSystem {
 
       if (this.shouldDie(agent)) {
         this.decisionSystem.applyReward(agent.id, agent.currentGoal, -1.4, decisionFeatures)
+        this.intentionSystem.applyReward(agent.id, agent.currentIntent, -1.2)
+        this.cooldownIntentManager.clear(agent.id)
         this.dropAgentInventoryToGround(agent, tick)
         this.agentById.delete(agent.id)
         deaths++
@@ -874,8 +1148,11 @@ export class CivSystem {
         hydration: agent.hydration,
         x: agent.x,
         y: agent.y,
+        currentIntent: agent.currentIntent,
         goal: agent.currentGoal,
         activityState: agent.activityState,
+        lastAction: agent.lastAction,
+        activePlan: this.planSystem.summarize(agent.activePlan),
         inventoryItems: this.cloneInventoryEntries(agent.inventoryItems),
         equipmentSlots: { ...agent.equipmentSlots },
         maxCarryWeight: agent.maxCarryWeight,
@@ -976,6 +1253,208 @@ export class CivSystem {
     return this.groundItems
       .slice(this.groundItems.length - limit)
       .map((item) => ({ ...item }))
+  }
+
+  exportState(): CivSystemState {
+    const factions: SerializableFaction[] = []
+    for (let i = 0; i < this.factions.length; i++) {
+      const faction = this.factions[i]
+      if (!faction) continue
+      const row = cloneJson(faction) as Omit<Faction, 'knowledgeMap'>
+      factions.push({
+        ...row,
+        knowledgeMap: {
+          discovered: Array.from(faction.knowledgeMap.discovered),
+          fertilityModel: Array.from(faction.knowledgeMap.fertilityModel),
+          hazardModel: Array.from(faction.knowledgeMap.hazardModel),
+        },
+      })
+    }
+
+    return {
+      factions,
+      ethnicities: cloneJson(this.ethnicities),
+      religions: cloneJson(this.religions),
+      speciesCivFounded: Array.from(this.speciesCivFounded.values()),
+      pendingIdentityNarrativeByFaction: Array.from(this.pendingIdentityNarrativeByFaction.values()),
+      pendingReligionNarrativeByFaction: Array.from(this.pendingReligionNarrativeByFaction.values()),
+      agents: cloneJson(this.agents),
+      timeline: cloneJson(this.timeline),
+      dialogues: cloneJson(this.dialogues),
+      metrics: cloneJson(this.metrics),
+      pendingNarratives: cloneJson(this.pendingNarratives),
+      groundItems: cloneJson(this.groundItems),
+      groundItemCounter: this.groundItemCounter,
+      lastGroundSpawnTick: this.lastGroundSpawnTick,
+      notes: cloneJson(this.notes),
+      noteCounter: this.noteCounter,
+      factionCounter: this.factionCounter,
+      agentCounter: this.agentCounter,
+      timelineCounter: this.timelineCounter,
+      dialogueCounter: this.dialogueCounter,
+      itemRngState: this.itemRng.getState(),
+      building: this.buildingSystem.exportState(),
+      cooldowns: this.cooldownIntentManager.exportState(),
+    }
+  }
+
+  hydrateState(
+    state: CivSystemState,
+    world: WorldState,
+    speciesStats: readonly SpeciesStat[] = [],
+  ): void {
+    this.factions.length = 0
+    this.factionById.clear()
+    this.ethnicities.length = 0
+    this.ethnicityById.clear()
+    this.religions.length = 0
+    this.religionById.clear()
+    this.speciesStatsById.clear()
+    this.speciesCivFounded.clear()
+    this.pendingIdentityNarrativeByFaction.clear()
+    this.pendingReligionNarrativeByFaction.clear()
+    this.agents.length = 0
+    this.agentById.clear()
+    this.agentsByTile.clear()
+    this.agentsScratch.length = 0
+    this.newbornScratch.length = 0
+    this.queryScratch.length = 0
+    this.timeline.length = 0
+    this.dialogues.length = 0
+    this.metrics.length = 0
+    this.pendingNarratives.length = 0
+    this.pendingNarrativeKeys.clear()
+    this.groundItems.length = 0
+    this.groundItemById.clear()
+    this.notes.length = 0
+    this.noteById.clear()
+
+    this.buildingSystem.hydrateState(state.building)
+    this.cooldownIntentManager.hydrateState(state.cooldowns)
+    this.itemRng.setState(state.itemRngState)
+
+    this.factionCounter = Math.max(0, state.factionCounter | 0)
+    this.agentCounter = Math.max(0, state.agentCounter | 0)
+    this.timelineCounter = Math.max(0, state.timelineCounter | 0)
+    this.dialogueCounter = Math.max(0, state.dialogueCounter | 0)
+    this.groundItemCounter = Math.max(0, state.groundItemCounter | 0)
+    this.lastGroundSpawnTick = Math.max(0, state.lastGroundSpawnTick | 0)
+    this.noteCounter = Math.max(0, state.noteCounter | 0)
+
+    const factionRows = Array.isArray(state.factions) ? state.factions : []
+    for (let i = 0; i < factionRows.length; i++) {
+      const row = factionRows[i]
+      if (!row) continue
+      const faction: Faction = {
+        ...(cloneJson(row) as Omit<Faction, 'knowledgeMap'>),
+        knowledgeMap: {
+          discovered: new Uint8Array(row.knowledgeMap?.discovered ?? []),
+          fertilityModel: new Uint8Array(row.knowledgeMap?.fertilityModel ?? []),
+          hazardModel: new Uint8Array(row.knowledgeMap?.hazardModel ?? []),
+        },
+      }
+      this.factions.push(faction)
+      this.factionById.set(faction.id, faction)
+    }
+
+    const ethnicityRows = Array.isArray(state.ethnicities) ? state.ethnicities : []
+    for (let i = 0; i < ethnicityRows.length; i++) {
+      const row = ethnicityRows[i]
+      if (!row) continue
+      const ethnicity = cloneJson(row)
+      this.ethnicities.push(ethnicity)
+      this.ethnicityById.set(ethnicity.id, ethnicity)
+    }
+
+    const religionRows = Array.isArray(state.religions) ? state.religions : []
+    for (let i = 0; i < religionRows.length; i++) {
+      const row = religionRows[i]
+      if (!row) continue
+      const religion = cloneJson(row)
+      this.religions.push(religion)
+      this.religionById.set(religion.id, religion)
+    }
+
+    const founded = Array.isArray(state.speciesCivFounded) ? state.speciesCivFounded : []
+    for (let i = 0; i < founded.length; i++) {
+      const id = founded[i]
+      if (!id) continue
+      this.speciesCivFounded.add(id)
+    }
+    const pendingIdentity = Array.isArray(state.pendingIdentityNarrativeByFaction)
+      ? state.pendingIdentityNarrativeByFaction
+      : []
+    for (let i = 0; i < pendingIdentity.length; i++) {
+      const id = pendingIdentity[i]
+      if (!id) continue
+      this.pendingIdentityNarrativeByFaction.add(id)
+    }
+    const pendingReligion = Array.isArray(state.pendingReligionNarrativeByFaction)
+      ? state.pendingReligionNarrativeByFaction
+      : []
+    for (let i = 0; i < pendingReligion.length; i++) {
+      const id = pendingReligion[i]
+      if (!id) continue
+      this.pendingReligionNarrativeByFaction.add(id)
+    }
+
+    const agentRows = Array.isArray(state.agents) ? state.agents : []
+    for (let i = 0; i < agentRows.length; i++) {
+      const row = agentRows[i]
+      if (!row) continue
+      const agent = cloneJson(row)
+      this.agents.push(agent)
+      this.agentById.set(agent.id, agent)
+      const key = `${agent.x}:${agent.y}`
+      const list = this.agentsByTile.get(key)
+      if (list) {
+        list.push(agent)
+      } else {
+        this.agentsByTile.set(key, [agent])
+      }
+    }
+
+    this.timeline.push(...cloneJson(state.timeline ?? []))
+    this.dialogues.push(...cloneJson(state.dialogues ?? []))
+    this.metrics.push(...cloneJson(state.metrics ?? []))
+    this.pendingNarratives.push(...cloneJson(state.pendingNarratives ?? []))
+    for (let i = 0; i < this.pendingNarratives.length; i++) {
+      const row = this.pendingNarratives[i]
+      if (!row) continue
+      this.pendingNarrativeKeys.add(row.id)
+    }
+
+    const groundRows = Array.isArray(state.groundItems) ? state.groundItems : []
+    for (let i = 0; i < groundRows.length; i++) {
+      const row = groundRows[i]
+      if (!row) continue
+      const item = cloneJson(row)
+      this.groundItems.push(item)
+      this.groundItemById.set(item.id, item)
+    }
+
+    const noteRows = Array.isArray(state.notes) ? state.notes : []
+    for (let i = 0; i < noteRows.length; i++) {
+      const row = noteRows[i]
+      if (!row) continue
+      const note = cloneJson(row)
+      this.notes.push(note)
+      this.noteById.set(note.id, note)
+    }
+
+    this.ethnicitySystem.reset(this.ethnicities)
+    this.identityEvolutionSystem.reset(this.religions)
+    this.syncSpeciesStats(speciesStats)
+    this.reconcileConsistency()
+
+    this.territorySystem.reset(this.factions)
+    this.territorySystem.step({
+      tick: world.tick,
+      world,
+      factions: this.factions,
+      agents: this.agents,
+      structures: this.buildingSystem.getStructures(),
+    })
   }
 
   getItemsSnapshot(tick: number, preferredFactionId: string | null = null): CivItemsSnapshot | null {
@@ -1183,6 +1662,7 @@ export class CivSystem {
       return null
     }
     this.syncAgentCarryState(agent)
+    const latestMentalLog = agent.mentalLogs[agent.mentalLogs.length - 1] ?? null
 
     return {
       agentId: agent.id,
@@ -1206,14 +1686,24 @@ export class CivSystem {
       maxCarryWeight: agent.maxCarryWeight,
       currentCarryWeight: agent.currentCarryWeight,
       relationsCount: Object.keys(agent.relations.trust).length,
+      currentIntent: agent.currentIntent,
       goal: agent.currentGoal,
       activityState: agent.activityState,
+      lastAction: agent.lastAction,
+      proposedPlan: this.planSystem.summarize(agent.proposedPlan),
+      activePlan: this.planSystem.summarize(agent.activePlan),
       vitality: agent.vitality,
       hunger: agent.hunger,
       waterNeed: agent.waterNeed,
       hazardStress: agent.hazardStress,
       currentThought: agent.currentThought,
       thoughtGloss: agent.thoughtGloss,
+      latestMentalLog: latestMentalLog
+        ? {
+            ...latestMentalLog,
+            reasonCodes: [...latestMentalLog.reasonCodes],
+          }
+        : undefined,
       mentalState: {
         ...agent.mentalState,
         lastReasonCodes: [...agent.mentalState.lastReasonCodes],
@@ -1627,7 +2117,11 @@ export class CivSystem {
       lastTalkTick: 0,
       lastDecisionTick: 0,
       lastActionTick: 0,
+      currentIntent: defaultIntentByRole(role),
       currentGoal: 'Explore',
+      proposedPlan: null,
+      activePlan: null,
+      lastAction: 'idle',
       activityState: 'idle',
       goalTargetX: x,
       goalTargetY: y,
@@ -1650,7 +2144,10 @@ export class CivSystem {
         targetX: x,
         targetY: y,
         targetLabel: 'start',
+        emotionalTone: 'calm',
       },
+      mentalLogs: [],
+      dialogueMemory: [],
       lastUtteranceTokens: [],
       lastUtteranceGloss: undefined,
     }
@@ -1752,6 +2249,48 @@ export class CivSystem {
     return pool[rng.nextInt(pool.length)] ?? null
   }
 
+  private resolveEquippedToolTags(agent: Agent): string[] {
+    if (!this.itemCatalog || !agent.equippedItemId) {
+      return []
+    }
+    const item = this.itemCatalog.getById(agent.equippedItemId)
+    if (!item) {
+      return []
+    }
+    if (item.toolTags.length > 0) {
+      return [...item.toolTags]
+    }
+    if (item.category === 'tool' || item.category === 'weapon') {
+      return ['knife']
+    }
+    return []
+  }
+
+  private applyHarvestToFaction(agent: Agent, faction: Faction, materialId: string, amount: number): void {
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return
+    }
+    const normalizedAmount = Math.max(0.1, amount)
+
+    if (materialId === 'wood') {
+      faction.stockpile.wood += normalizedAmount
+      return
+    }
+    if (materialId === 'stone') {
+      faction.stockpile.stone += normalizedAmount
+      return
+    }
+    if (materialId === 'iron_ore' || materialId === 'iron_ingot') {
+      faction.stockpile.ore += normalizedAmount
+      incrementItemInventory(faction.itemInventory, materialId, normalizedAmount)
+      incrementItemInventory(agent.itemInventory, materialId, Math.max(1, Math.floor(normalizedAmount)))
+      return
+    }
+
+    incrementItemInventory(faction.itemInventory, materialId, normalizedAmount)
+    incrementItemInventory(agent.itemInventory, materialId, Math.max(1, Math.floor(normalizedAmount)))
+  }
+
   private computeDecisionFeatures(
     agent: Agent,
     faction: Faction,
@@ -1774,6 +2313,28 @@ export class CivSystem {
     )
 
     let nearResourceNode = 0
+    const nodeAtTile = this.resourceNodeSystem?.getNodeAt(agent.x, agent.y)
+    if (nodeAtTile && nodeAtTile.amount > 0) {
+      nearResourceNode = 1
+    }
+
+    if (nearResourceNode < 1 && this.resourceNodeSystem) {
+      const nearbyNodes = this.resourceNodeSystem.queryInRect(
+        agent.x - 2,
+        agent.y - 2,
+        agent.x + 2,
+        agent.y + 2,
+      )
+      for (let i = 0; i < nearbyNodes.length; i++) {
+        const node = nearbyNodes[i]
+        if (!node || node.amount <= 0) continue
+        const distance = Math.abs(node.x - agent.x) + Math.abs(node.y - agent.y)
+        const proximity = distance === 0 ? 1 : distance === 1 ? 0.75 : 0.45
+        const amountFactor = clamp(node.amount / 180, 0.2, 1)
+        nearResourceNode = Math.max(nearResourceNode, proximity * amountFactor)
+      }
+    }
+
     for (let i = 0; i < this.groundItems.length; i++) {
       const stack = this.groundItems[i]
       if (!stack || stack.quantity <= 0) continue
@@ -2264,6 +2825,60 @@ export class CivSystem {
     agent.equippedItemId = null
   }
 
+  private pushDialogueMemory(agent: Agent, utterance: string): void {
+    agent.dialogueMemory.push(utterance)
+    if (agent.dialogueMemory.length > 5) {
+      agent.dialogueMemory.splice(0, agent.dialogueMemory.length - 5)
+    }
+  }
+
+  private pushMentalLog(
+    agent: Agent,
+    tick: number,
+    intent: AgentIntent,
+    reasonCodes: ReasonCode[],
+  ): void {
+    const log: MentalLog = {
+      tick,
+      thought: agent.currentThought || `Intent ${intent}`,
+      reasonCodes: [...reasonCodes],
+      linkedIntent: intent,
+    }
+    agent.mentalLogs.push(log)
+    if (agent.mentalLogs.length > 14) {
+      agent.mentalLogs.splice(0, agent.mentalLogs.length - 14)
+    }
+  }
+
+  private clonePlan(plan: AgentPlan): AgentPlan {
+    return {
+      ...plan,
+      reasonCodes: [...plan.reasonCodes],
+      steps: plan.steps.map((step) => ({
+        ...step,
+      })),
+    }
+  }
+
+  private resolveBlueprintForAgentIntent(agent: Agent): StructureBlueprint {
+    if (agent.currentIntent === 'fortify') {
+      return agent.role === 'Guard' ? 'watch_tower' : 'palisade'
+    }
+    if (agent.currentIntent === 'farm') {
+      return 'farm_plot'
+    }
+    if (agent.currentIntent === 'expand_territory') {
+      return 'watch_tower'
+    }
+    if (agent.role === 'Scribe' || agent.role === 'Trader') {
+      return 'storage'
+    }
+    if (agent.role === 'Leader' || agent.role === 'Elder') {
+      return 'shrine'
+    }
+    return 'hut'
+  }
+
   private createDialogueRecord(
     tick: number,
     factionId: string,
@@ -2271,10 +2886,13 @@ export class CivSystem {
     b: Agent,
     world: WorldState,
     rng: SeededRng,
-  ): void {
+  ): boolean {
     const faction = this.factionById.get(factionId)
     if (!faction) {
-      return
+      return false
+    }
+    if (!a.activePlan || !b.activePlan) {
+      return false
     }
 
     const scarcity = clamp(
@@ -2286,9 +2904,30 @@ export class CivSystem {
     const concepts = this.communicationSystem.pickCoreConcepts(faction, scarcity, hazard, rng)
     const utteranceA = this.communicationSystem.buildUtterance(faction, concepts, rng)
     const utteranceB = this.communicationSystem.buildUtterance(faction, concepts, rng)
+    const stepA = this.planSystem.getCurrentStep(a.activePlan)
+    const stepB = this.planSystem.getCurrentStep(b.activePlan)
+    const binding = this.dialogueActionBinding.build({
+      tick,
+      factionId,
+      factionName: this.getFactionDisplayName(faction),
+      speakerA: a,
+      speakerB: b,
+      planA: a.activePlan,
+      planB: b.activePlan,
+      stepA,
+      stepB,
+    })
 
-    a.lastUtteranceTokens = [...utteranceA.tokens]
-    b.lastUtteranceTokens = [...utteranceB.tokens]
+    a.lastUtteranceTokens = binding.lineA
+      .replace(/[\[\]\"]/g, '')
+      .split(/\s+/)
+      .slice(0, 16)
+    b.lastUtteranceTokens = binding.lineB
+      .replace(/[\[\]\"]/g, '')
+      .split(/\s+/)
+      .slice(0, 16)
+    this.pushDialogueMemory(a, binding.lineA)
+    this.pushDialogueMemory(b, binding.lineB)
 
     const id = `dlg-${this.seed}-${++this.dialogueCounter}`
     const record: DialogueRecord = {
@@ -2297,14 +2936,15 @@ export class CivSystem {
       factionId,
       speakerAId: a.id,
       speakerBId: b.id,
-      topic: 'discovery',
+      topic: binding.topic,
       utteranceA: [...utteranceA.tokens],
       utteranceB: [...utteranceB.tokens],
+      actionContext: binding.actionContext,
       lines: [
-        { speaker: a.name, text: utteranceA.tokens.join(' ') },
-        { speaker: b.name, text: utteranceB.tokens.join(' ') },
+        { speaker: a.name, text: binding.lineA },
+        { speaker: b.name, text: binding.lineB },
       ],
-      newTerms: [],
+      newTerms: [...utteranceA.tokens.slice(0, 1), ...utteranceB.tokens.slice(0, 1)],
       narrativeApplied: false,
     }
 
@@ -2333,11 +2973,14 @@ export class CivSystem {
         dialogueId: id,
         speakerAName: a.name,
         speakerBName: b.name,
-        contextSummary: `scarcity=${scarcity.toFixed(2)} hazard=${hazard.toFixed(2)} grammar=${faction.communication.grammarLevel}`,
+        contextSummary: `scarcity=${scarcity.toFixed(2)} hazard=${hazard.toFixed(2)} grammar=${faction.communication.grammarLevel} intentA=${a.currentIntent} intentB=${b.currentIntent}`,
+        actionContext: binding.actionContext,
         utteranceTokens: [...utteranceA.tokens, ...utteranceB.tokens],
+        recentFactionUtterances: binding.recentFactionUtterances,
         communication: this.communicationSystem.summarize(faction),
       },
     })
+    return true
   }
 
   private applyTrade(agent: Agent, faction: Faction, rng: SeededRng, tick: number): boolean {
@@ -2931,6 +3574,12 @@ export class CivSystem {
       `hazard=${hazard}`,
       `strategy=${faction.adaptationStrategy}`,
     ].join(' ')
+  }
+
+  private reconcileConsistency(): void {
+    this.validateEntityLinks()
+    this.rebuildMembers()
+    this.rebuildTileIndex()
   }
 
   private validateEntityLinks(): void {

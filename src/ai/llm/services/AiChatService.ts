@@ -72,6 +72,11 @@ function compactJson(value: unknown, maxLen = 2200): string {
   return `${text.slice(0, maxLen)}...`
 }
 
+function compactText(value: string, maxLen: number): string {
+  if (value.length <= maxLen) return value
+  return `${value.slice(0, maxLen)}...`
+}
+
 function formatToolsForPrompt(): string {
   return AI_TOOL_DEFINITIONS.map((def) => {
     return `- ${def.name}: ${def.description}; input=${JSON.stringify(def.inputSchema)}`
@@ -129,7 +134,16 @@ export type AiChatHistoryMessage = {
 }
 
 export type AiChatSelectionContext = {
-  type: 'species' | 'creature' | 'civilization' | 'event' | 'era' | 'note' | 'ethnicity' | 'religion'
+  type:
+    | 'species'
+    | 'creature'
+    | 'civilization'
+    | 'event'
+    | 'era'
+    | 'note'
+    | 'structure'
+    | 'ethnicity'
+    | 'religion'
   id: string
   label: string
 }
@@ -216,6 +230,7 @@ export class AiChatService {
     this.client = options.client ?? new LlmClient({
       provider: coreConfig.llm.provider,
       baseUrl: coreConfig.llm.baseUrl,
+      apiKey: coreConfig.llm.apiKey,
       timeoutMs: coreConfig.llm.timeoutMs,
     })
 
@@ -229,7 +244,7 @@ export class AiChatService {
     })
   }
 
-  getProvider(): 'ollama' | 'llamaCpp' {
+  getProvider(): 'ollama' | 'llamaCpp' | 'openai' {
     return this.client.getProvider()
   }
 
@@ -399,10 +414,17 @@ export class AiChatService {
     observations: readonly ToolObservation[],
     step: number,
   ): Promise<StepOutput> {
-    const historyTail = request.history.slice(-8)
+    const historyTail = request.history.slice(-6)
     const historyText = historyTail
-      .map((msg) => `${msg.role.toUpperCase()}: ${msg.text}`)
+      .map((msg) => {
+        const normalized = msg.text.trim().replace(/\s+/g, ' ')
+        return `${msg.role.toUpperCase()}: ${compactText(normalized, 220)}`
+      })
       .join('\n')
+    const historySection = compactText(historyText, 1400)
+    const worldPackSection = compactText(request.worldPackText, 1400)
+    const toolsSection = compactText(formatToolsForPrompt(), 1600)
+    const questionSection = compactText(request.question.trim(), 320)
 
     const selectionLine = request.followSelection && request.selection
       ? `Selection in focus: ${request.selection.type}[${request.selection.id}] ${request.selection.label}`
@@ -412,15 +434,16 @@ export class AiChatService {
       ? observations
           .map((item, index) => {
             const status = item.result.ok ? 'ok' : `error=${item.result.error ?? 'unknown'}`
-            const data = item.result.ok ? compactJson(item.result.data, 1800) : '{}'
+            const data = item.result.ok ? compactJson(item.result.data, 900) : '{}'
             return `OBS#${index + 1} tool=${item.tool} input=${compactJson(item.input, 400)} status=${status} data=${data}`
           })
           .join('\n')
       : 'OBS: none'
+    const observationsSection = compactText(observationText, 3000)
 
     const outputSchema = [
       '{"kind":"tool","tool":"<toolName>","input":{...},"reason":"short"}',
-      '{"kind":"final","answer":"string","references":[{"type":"species|creature|civilization|event|era|note|ethnicity|religion","id":"id","label":"label"}],"suggested_questions":["q1","q2"]}',
+      '{"kind":"final","answer":"string","references":[{"type":"species|creature|civilization|event|era|note|structure|ethnicity|religion","id":"id","label":"label"}],"suggested_questions":["q1","q2"]}',
     ].join('\n')
 
     const messages: ChatMessage[] = [
@@ -441,12 +464,12 @@ export class AiChatService {
           `Step ${step + 1}`,
           `Mode: ${request.mode}`,
           `Tool budget total: ${this.maxToolCalls}`,
-          `Tools available:\n${formatToolsForPrompt()}`,
-          `World pack:\n${request.worldPackText}`,
+          `Tools available:\n${toolsSection}`,
+          `World pack:\n${worldPackSection}`,
           selectionLine,
-          historyText ? `History:\n${historyText}` : 'History: none',
-          observationText,
-          `User question: ${request.question}`,
+          historySection ? `History:\n${historySection}` : 'History: none',
+          observationsSection,
+          `User question: ${questionSection}`,
           'If mode is explain, structure answer with explicit cause -> effect bullets.',
           `Output JSON schema (choose one):\n${outputSchema}`,
         ].join('\n\n'),

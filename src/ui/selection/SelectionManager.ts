@@ -5,6 +5,7 @@ export type SelectionType =
   | 'event'
   | 'era'
   | 'note'
+  | 'structure'
   | 'ethnicity'
   | 'religion'
 
@@ -65,6 +66,10 @@ export class SelectionManager {
 
   selectNote(id: string, label?: string): void {
     this.setSelection({ type: 'note', id, label })
+  }
+
+  selectStructure(id: string, label?: string): void {
+    this.setSelection({ type: 'structure', id, label })
   }
 
   onChange(listener: SelectionListener): () => void {

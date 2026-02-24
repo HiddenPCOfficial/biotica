@@ -16,6 +16,11 @@ type DialogueContext = {
   speakerAName: string
   speakerBName: string
   contextSummary: string
+  actionContext?: string
+  currentIntent?: string
+  activePlan?: string
+  mentalStateSummary?: string
+  recentUtterances?: string[]
 }
 
 type AgentBioContext = {
@@ -189,6 +194,11 @@ export class NarrativeService {
               `speaker A: ${context.speakerAName}`,
               `speaker B: ${context.speakerBName}`,
               `contesto: ${context.contextSummary}`,
+              `action_context: ${context.actionContext ?? '-'}`,
+              `intent: ${context.currentIntent ?? '-'}`,
+              `active_plan: ${context.activePlan ?? '-'}`,
+              `mental_state: ${context.mentalStateSummary ?? '-'}`,
+              `recent_utterances: ${(context.recentUtterances ?? []).slice(-5).join(' || ') || '-'}`,
               'Usa massimo 2 linee (A e B).',
               'Crea 0-2 termini nuovi.',
               'Mantieni tono plausibile e da cultura nascente.',

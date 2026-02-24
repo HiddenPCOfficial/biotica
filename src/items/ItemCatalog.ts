@@ -2,11 +2,14 @@ import { TileId } from '../game/enums/TileId'
 
 export type BiomeType = TileId
 
+export type ToolTag = 'axe' | 'pickaxe' | 'hammer' | 'shovel' | 'knife' | 'sickle'
+
 export type ItemCategory =
   | 'resource'
   | 'tool'
   | 'weapon'
   | 'food'
+  | 'component'
   | 'structure_part'
   | 'artifact'
 
@@ -26,6 +29,11 @@ export type ItemDefinition = {
   baseProperties: ItemBaseProperties
   naturalSpawn: boolean
   allowedBiomes: BiomeType[]
+  toolTags?: ToolTag[]
+  durability?: number
+  efficiency?: number
+  requiredTechLevel?: number
+  madeOfMaterials?: string[]
 }
 
 export type FrozenItemDefinition = Readonly<{
@@ -35,6 +43,11 @@ export type FrozenItemDefinition = Readonly<{
   baseProperties: Readonly<ItemBaseProperties>
   naturalSpawn: boolean
   allowedBiomes: ReadonlyArray<BiomeType>
+  toolTags: ReadonlyArray<ToolTag>
+  durability: number
+  efficiency: number
+  requiredTechLevel: number
+  madeOfMaterials: ReadonlyArray<string>
 }>
 
 function normalizeId(value: string): string {
@@ -87,6 +100,40 @@ function sanitizeBiomes(value: readonly BiomeType[] | undefined): BiomeType[] {
   return Array.from(unique.values()).sort((a, b) => a - b)
 }
 
+function sanitizeToolTags(value: readonly string[] | undefined): ToolTag[] {
+  if (!value || value.length === 0) {
+    return []
+  }
+  const unique = new Set<ToolTag>()
+  for (let i = 0; i < value.length; i++) {
+    const tag = String(value[i] ?? '').trim().toLowerCase()
+    if (
+      tag === 'axe' ||
+      tag === 'pickaxe' ||
+      tag === 'hammer' ||
+      tag === 'shovel' ||
+      tag === 'knife' ||
+      tag === 'sickle'
+    ) {
+      unique.add(tag)
+    }
+  }
+  return Array.from(unique.values())
+}
+
+function sanitizeMaterials(value: readonly string[] | undefined): string[] {
+  if (!value || value.length === 0) {
+    return []
+  }
+  const unique = new Set<string>()
+  for (let i = 0; i < value.length; i++) {
+    const id = normalizeId(String(value[i] ?? ''))
+    if (!id) continue
+    unique.add(id)
+  }
+  return Array.from(unique.values()).sort()
+}
+
 function sanitizeProperties(value: Partial<ItemBaseProperties> | undefined): ItemBaseProperties {
   const raw = value ?? {}
   const weight = clamp(toFiniteNumber(raw.weight, 1), 0.05, 300)
@@ -99,7 +146,7 @@ function sanitizeProperties(value: Partial<ItemBaseProperties> | undefined): Ite
 
   const durability = toFiniteNumber(raw.durability, NaN)
   if (Number.isFinite(durability)) {
-    out.durability = clamp(durability, 1, 2000)
+    out.durability = clamp(durability, 1, 3000)
   }
 
   const damage = toFiniteNumber(raw.damage, NaN)
@@ -120,14 +167,57 @@ function sanitizeProperties(value: Partial<ItemBaseProperties> | undefined): Ite
   return out
 }
 
+function defaultTechByCategory(category: ItemCategory): number {
+  switch (category) {
+    case 'resource':
+      return 0
+    case 'food':
+      return 0
+    case 'tool':
+      return 1
+    case 'component':
+      return 1
+    case 'structure_part':
+      return 2
+    case 'weapon':
+      return 2
+    case 'artifact':
+      return 3
+    default:
+      return 1
+  }
+}
+
 function freezeItem(item: ItemDefinition): FrozenItemDefinition {
+  const normalizedId = normalizeId(item.id)
+  const baseProperties = sanitizeProperties(item.baseProperties)
+  const category = item.category
+  const toolTags = sanitizeToolTags(item.toolTags)
+  const durability = clamp(
+    toFiniteNumber(item.durability, toFiniteNumber(baseProperties.durability, category === 'tool' ? 90 : 40)),
+    1,
+    5000,
+  )
+  const efficiency = clamp(toFiniteNumber(item.efficiency, 1), 0.05, 8)
+  const requiredTechLevel = clamp(
+    toFiniteNumber(item.requiredTechLevel, defaultTechByCategory(category)),
+    0,
+    12,
+  )
+  const madeOfMaterials = sanitizeMaterials(item.madeOfMaterials)
+
   const frozen: FrozenItemDefinition = Object.freeze({
-    id: normalizeId(item.id),
-    name: item.name.trim() || item.id,
-    category: item.category,
-    baseProperties: Object.freeze({ ...item.baseProperties }),
+    id: normalizedId,
+    name: item.name.trim() || normalizedId,
+    category,
+    baseProperties: Object.freeze(baseProperties),
     naturalSpawn: Boolean(item.naturalSpawn),
-    allowedBiomes: Object.freeze([...item.allowedBiomes]),
+    allowedBiomes: Object.freeze(sanitizeBiomes(item.allowedBiomes)),
+    toolTags: Object.freeze(toolTags),
+    durability,
+    efficiency,
+    requiredTechLevel,
+    madeOfMaterials: Object.freeze(madeOfMaterials),
   })
   return frozen
 }
@@ -151,7 +241,7 @@ export class ItemCatalog {
     const items: FrozenItemDefinition[] = []
     const seenIds = new Set<string>()
 
-    const desiredCount = clamp(ensurePositiveInt(rawItems.length, 20), 1, 200)
+    const desiredCount = clamp(ensurePositiveInt(rawItems.length, 20), 1, 400)
     for (let i = 0; i < desiredCount; i++) {
       const item = rawItems[i]
       if (!item) continue
@@ -162,6 +252,7 @@ export class ItemCatalog {
         category !== 'tool' &&
         category !== 'weapon' &&
         category !== 'food' &&
+        category !== 'component' &&
         category !== 'structure_part' &&
         category !== 'artifact'
       ) {
@@ -174,16 +265,11 @@ export class ItemCatalog {
       }
       seenIds.add(normalizedId)
 
-      const normalized: ItemDefinition = {
+      const frozen = freezeItem({
+        ...item,
         id: normalizedId,
         name: item.name?.trim() || normalizedId,
-        category,
-        baseProperties: sanitizeProperties(item.baseProperties),
-        naturalSpawn: Boolean(item.naturalSpawn),
-        allowedBiomes: sanitizeBiomes(item.allowedBiomes),
-      }
-
-      const frozen = freezeItem(normalized)
+      })
       items.push(frozen)
       this.byId.set(frozen.id, frozen)
     }
@@ -227,6 +313,11 @@ export class ItemCatalog {
         baseProperties: { ...item.baseProperties },
         naturalSpawn: item.naturalSpawn,
         allowedBiomes: [...item.allowedBiomes],
+        toolTags: [...item.toolTags],
+        durability: item.durability,
+        efficiency: item.efficiency,
+        requiredTechLevel: item.requiredTechLevel,
+        madeOfMaterials: [...item.madeOfMaterials],
       })),
     }
   }

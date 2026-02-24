@@ -32,6 +32,11 @@ export type CraftAttemptResult = {
   efficiencyModifier?: number
 }
 
+export type CraftingEvolutionState = {
+  recipes: Recipe[]
+  unlockTicksByFaction: Record<string, Record<string, number>>
+}
+
 function clamp(value: number, min: number, max: number): number {
   if (value < min) return min
   if (value > max) return max
@@ -54,6 +59,8 @@ function categoryTech(category: ItemCategory): number {
     case 'food':
       return 1
     case 'tool':
+      return 1
+    case 'component':
       return 1
     case 'structure_part':
       return 2
@@ -277,6 +284,59 @@ export class CraftingEvolutionSystem {
       return a.resultItemName.localeCompare(b.resultItemName)
     })
     return rows
+  }
+
+  exportState(): CraftingEvolutionState {
+    const unlockTicksByFaction: Record<string, Record<string, number>> = {}
+    for (const [factionId, map] of this.unlockTicksByFaction.entries()) {
+      const row: Record<string, number> = {}
+      for (const [recipeId, tick] of map.entries()) {
+        row[recipeId] = tick
+      }
+      unlockTicksByFaction[factionId] = row
+    }
+    return {
+      recipes: this.recipes.map((recipe) => ({
+        ...recipe,
+        requiredItems: [...recipe.requiredItems],
+      })),
+      unlockTicksByFaction,
+    }
+  }
+
+  hydrateState(state: CraftingEvolutionState): void {
+    this.recipes.length = 0
+    this.unlockTicksByFaction.clear()
+
+    const recipes = Array.isArray(state.recipes) ? state.recipes : []
+    for (let i = 0; i < recipes.length; i++) {
+      const row = recipes[i]
+      if (!row) continue
+      if (!this.catalog.has(row.resultItemId)) continue
+      this.recipes.push({
+        id: row.id,
+        requiredItems: Array.isArray(row.requiredItems) ? [...row.requiredItems] : [],
+        requiredTechLevel: row.requiredTechLevel,
+        resultItemId: row.resultItemId,
+        efficiencyModifier: clamp(row.efficiencyModifier, 0.6, 2.8),
+      })
+    }
+
+    const unlockRows = state.unlockTicksByFaction ?? {}
+    const factionEntries = Object.entries(unlockRows)
+    for (let i = 0; i < factionEntries.length; i++) {
+      const [factionId, row] = factionEntries[i] ?? []
+      if (!factionId || !row) continue
+      const map = new Map<string, number>()
+      const recipeEntries = Object.entries(row)
+      for (let j = 0; j < recipeEntries.length; j++) {
+        const [recipeId, tick] = recipeEntries[j] ?? []
+        if (!recipeId) continue
+        if (typeof tick !== 'number' || !Number.isFinite(tick)) continue
+        map.set(recipeId, tick)
+      }
+      this.unlockTicksByFaction.set(factionId, map)
+    }
   }
 
   private buildBaseRecipes(): void {

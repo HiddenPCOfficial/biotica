@@ -64,6 +64,7 @@ export class CivilizationsPage implements OverlayPage {
   private relationChart: ChartLike | null = null
 
   private readonly notesList = document.createElement('ul')
+  private readonly structuresList = document.createElement('ul')
   private readonly dialoguesList = document.createElement('ul')
 
   private selectedFactionId: string | null = null
@@ -176,6 +177,14 @@ export class CivilizationsPage implements OverlayPage {
     this.notesList.className = 'bi-ov-list bi-ov-list-scroll bi-ov-scroll'
     this.notesList.style.maxHeight = '160px'
 
+    const structuresTitle = document.createElement('div')
+    structuresTitle.className = 'bi-ov-inline-stat'
+    structuresTitle.innerHTML = '<strong>Structures</strong>'
+    structuresTitle.style.marginTop = '10px'
+
+    this.structuresList.className = 'bi-ov-list bi-ov-list-scroll bi-ov-scroll'
+    this.structuresList.style.maxHeight = '140px'
+
     const dialogueTitle = document.createElement('div')
     dialogueTitle.className = 'bi-ov-inline-stat'
     dialogueTitle.innerHTML = '<strong>Recent Dialogues</strong>'
@@ -184,7 +193,14 @@ export class CivilizationsPage implements OverlayPage {
     this.dialoguesList.className = 'bi-ov-list bi-ov-list-scroll bi-ov-scroll'
     this.dialoguesList.style.maxHeight = '160px'
 
-    narrativeCard.append(noteTitle, this.notesList, dialogueTitle, this.dialoguesList)
+    narrativeCard.append(
+      noteTitle,
+      this.notesList,
+      structuresTitle,
+      this.structuresList,
+      dialogueTitle,
+      this.dialoguesList,
+    )
 
     bottomSplit.append(relationsCard, narrativeCard)
 
@@ -214,6 +230,7 @@ export class CivilizationsPage implements OverlayPage {
       this.selectedFactionHeader.textContent = 'No selected faction.'
       this.memberInspector.textContent = 'Civilization system not active.'
       this.notesList.innerHTML = '<li class="bi-ov-list-item">No notes.</li>'
+      this.structuresList.innerHTML = '<li class="bi-ov-list-item">No structures.</li>'
       this.dialoguesList.innerHTML = '<li class="bi-ov-list-item">No dialogues.</li>'
       this.relationMatrixHead.innerHTML = ''
       this.relationMatrixBody.innerHTML = '<tr><td>No relation data.</td></tr>'
@@ -225,6 +242,7 @@ export class CivilizationsPage implements OverlayPage {
       `<strong>wars</strong> ${civ.wars}`,
       `<strong>trades</strong> ${civ.trades}`,
       `<strong>notes</strong> ${civ.notes.length}`,
+      `<strong>structures</strong> ${civ.structures.length}`,
       `<strong>members</strong> ${civ.factionMembers.length}`,
       `<strong>ethnicities</strong> ${civ.ethnicities.length}`,
       `<strong>religions</strong> ${civ.religions.filter((item) => item.name).length}`,
@@ -234,6 +252,7 @@ export class CivilizationsPage implements OverlayPage {
     this.renderFactions(civ, snapshot)
     this.renderMembers(civ, snapshot)
     this.renderNotes(civ)
+    this.renderStructures(civ)
     this.renderDialogues(civ)
     this.renderRelations(civ)
   }
@@ -415,13 +434,22 @@ export class CivilizationsPage implements OverlayPage {
 
     const equipment = selectedAgent?.equipmentSlots ?? selectedMember.equipmentSlots
     const mental = selectedAgent?.mentalState ?? selectedMember.mentalState
+    const activePlan = selectedAgent?.activePlan ?? selectedMember.activePlan
+    const proposedPlan = selectedAgent?.proposedPlan ?? null
 
     this.memberInspector.textContent = [
       `${selectedMember.name} (${selectedMember.role})`,
       `species=${speciesNameById.get(selectedMember.speciesId) ?? selectedMember.speciesId}`,
       `ethnicity=${selectedMember.ethnicityId ? ethnicityById.get(selectedMember.ethnicityId)?.name ?? selectedMember.ethnicityId : '-'}`,
       `civilization=${selectedMember.factionName}`,
-      `goal=${selectedMember.goal} state=${selectedMember.activityState}`,
+      `intent=${selectedMember.currentIntent} goal=${selectedMember.goal} state=${selectedMember.activityState}`,
+      `lastAction=${selectedMember.lastAction}`,
+      activePlan
+        ? `activePlan=${activePlan.intent} step=${activePlan.currentStepIndex + 1}/${activePlan.totalSteps} progress=${(clamp01(activePlan.progress01) * 100).toFixed(0)}% -> ${activePlan.currentStepDescription}`
+        : 'activePlan=-',
+      proposedPlan
+        ? `proposedPlan=${proposedPlan.intent} status=${proposedPlan.status}`
+        : '',
       `energy=${selectedMember.energy.toFixed(1)} hydration=${selectedMember.hydration.toFixed(1)} age=${selectedMember.age.toFixed(1)}`,
       `carry=${(selectedAgent?.currentCarryWeight ?? selectedMember.currentCarryWeight).toFixed(2)} / ${(selectedAgent?.maxCarryWeight ?? selectedMember.maxCarryWeight).toFixed(2)}`,
       `equipment: main=${equipment.mainHand ?? '-'} off=${equipment.offHand ?? '-'} body=${equipment.body ?? '-'} util=${equipment.utility ?? '-'}`,
@@ -430,8 +458,11 @@ export class CivilizationsPage implements OverlayPage {
       `mental.goal=${mental.currentGoal}`,
       `mental.reasons=${mental.lastReasonCodes.join(', ') || '-'}`,
       `mental.target=${mental.targetLabel} @ (${mental.targetX}, ${mental.targetY})`,
-      `mental.food=${(clamp01(mental.perceivedFoodLevel) * 100).toFixed(0)}% threat=${(clamp01(mental.perceivedThreatLevel) * 100).toFixed(0)}% stress=${(clamp01(mental.stressLevel) * 100).toFixed(0)}% loyalty=${(clamp01(mental.loyaltyToFaction) * 100).toFixed(0)}%`,
+      `mental.food=${(clamp01(mental.perceivedFoodLevel) * 100).toFixed(0)}% threat=${(clamp01(mental.perceivedThreatLevel) * 100).toFixed(0)}% stress=${(clamp01(mental.stressLevel) * 100).toFixed(0)}% loyalty=${(clamp01(mental.loyaltyToFaction) * 100).toFixed(0)}% tone=${mental.emotionalTone}`,
       selectedAgent ? `thought=${selectedAgent.thought}` : '',
+      selectedAgent?.latestMentalLog
+        ? `mentalLog[t${selectedAgent.latestMentalLog.tick}] intent=${selectedAgent.latestMentalLog.linkedIntent} reasons=${selectedAgent.latestMentalLog.reasonCodes.join(', ') || '-'}`
+        : '',
       selectedAgent?.thoughtGloss ? `thought gloss=${selectedAgent.thoughtGloss}` : 'thought gloss=not generated',
       selectedAgent?.narrativeBio ? `bio=${selectedAgent.narrativeBio}` : '',
     ]
@@ -487,6 +518,43 @@ export class CivilizationsPage implements OverlayPage {
 
     if (this.notesList.childElementCount === 0) {
       this.notesList.innerHTML = '<li class="bi-ov-list-item">No notes for selected faction.</li>'
+    }
+  }
+
+  private renderStructures(civ: NonNullable<SimulationSnapshot['civ']>): void {
+    this.structuresList.innerHTML = ''
+    const rows = civ.structures
+      .filter((row) => !this.selectedFactionId || row.factionId === this.selectedFactionId)
+      .sort((a, b) => b.builtAtTick - a.builtAtTick)
+      .slice(0, 80)
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
+      if (!row) continue
+      const li = document.createElement('li')
+      li.className = 'bi-ov-list-item bi-ov-items-ground-item'
+
+      const body = document.createElement('div')
+      body.innerHTML = [
+        `<strong>${row.blueprint ?? row.type}</strong>`,
+        `faction=${row.factionId} pos=(${row.x}, ${row.y})`,
+        `state=${row.completed ? 'completed' : 'in-progress'} progress=${(clamp01(row.progress) * 100).toFixed(0)}%`,
+      ].join('<br/>')
+
+      const focusBtn = document.createElement('button')
+      focusBtn.type = 'button'
+      focusBtn.className = 'bi-ov-btn bi-ov-btn-ghost'
+      focusBtn.textContent = 'Focus'
+      focusBtn.addEventListener('click', () => {
+        this.emitAction('focusWorldPoint', { x: row.x, y: row.y })
+      })
+
+      li.append(body, focusBtn)
+      this.structuresList.appendChild(li)
+    }
+
+    if (this.structuresList.childElementCount === 0) {
+      this.structuresList.innerHTML = '<li class="bi-ov-list-item">No structures for selected faction.</li>'
     }
   }
 

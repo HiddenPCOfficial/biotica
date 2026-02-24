@@ -13,6 +13,7 @@ const TAB_DEFS: TabDef[] = [
   { id: 'species', label: 'Species', short: 'SP' },
   { id: 'environment', label: 'Environment', short: 'EN' },
   { id: 'worldGenesis', label: 'Genesis', short: 'GN' },
+  { id: 'structures', label: 'Structures', short: 'ST' },
   { id: 'civilizations', label: 'Civilizations', short: 'CV' },
   { id: 'individuals', label: 'Individuals', short: 'IN' },
   { id: 'items', label: 'Items', short: 'IT' },
@@ -35,6 +36,7 @@ export class OverlayRoot {
   readonly playPauseBtn = document.createElement('button')
   readonly speedDownBtn = document.createElement('button')
   readonly speedUpBtn = document.createElement('button')
+  readonly saveBtn = document.createElement('button')
   readonly resetBtn = document.createElement('button')
   readonly worldViewBtn = document.createElement('button')
   readonly hideHudBtn = document.createElement('button')
@@ -167,6 +169,9 @@ export class OverlayRoot {
     this.speedUpBtn.className = 'bi-ov-btn bi-ov-btn-ghost'
     this.speedUpBtn.textContent = 'Speed +'
 
+    this.saveBtn.className = 'bi-ov-btn'
+    this.saveBtn.textContent = 'Save'
+
     this.seedInput.className = 'bi-ov-input'
     this.seedInput.type = 'number'
     this.seedInput.placeholder = 'Seed'
@@ -186,6 +191,7 @@ export class OverlayRoot {
       this.playPauseBtn,
       this.speedDownBtn,
       this.speedUpBtn,
+      this.saveBtn,
       this.seedInput,
       this.resetBtn,
       this.worldViewBtn,

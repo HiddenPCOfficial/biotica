@@ -50,6 +50,13 @@ export type WorldGenesisApplyResult = {
   tuning: SimTuning
 }
 
+export type WorldRuntimeTuning = {
+  treeDensityMultiplier: number
+  volcanoIntervalMinTicks: number
+  volcanoIntervalMaxTicks: number
+  volcanoMaxLavaTiles: number
+}
+
 const DEFAULT_STATIC_WORLD_CONFIG: WorldGenome = {
   plantBaseGrowth: 1.25,
   plantDecay: 0.24,
@@ -199,6 +206,35 @@ export class WorldGenesisAgent {
         scores: { ...row.scores },
       })),
       reasonCodes: [...result.report.reasonCodes],
+    }
+  }
+
+  deriveRuntimeTuning(result: WorldGenesisResult): WorldRuntimeTuning {
+    const best = result.bestConfig
+    const eventNorm = clamp(best.eventRate / 2.2, 0, 1)
+    const droughtNorm = clamp(best.droughtSeverity, 0, 1)
+    const rainNorm = clamp(best.rainSeverity, 0, 1)
+    const biomassNorm = clamp(best.initialBiomass, 0, 1)
+
+    const treeDensityMultiplier = clamp(
+      1.08 + biomassNorm * 0.62 + rainNorm * 0.35 - droughtNorm * 0.22,
+      1,
+      2.1,
+    )
+
+    const volcanoIntervalMinTicks = Math.floor(
+      clamp(5000 + (1 - eventNorm) * 6500 + (1 - droughtNorm) * 3000, 5000, 20000),
+    )
+    const volcanoIntervalMaxTicks = Math.floor(
+      clamp(volcanoIntervalMinTicks + 4500 + rainNorm * 3500, volcanoIntervalMinTicks, 26000),
+    )
+    const volcanoMaxLavaTiles = Math.floor(clamp(120 + droughtNorm * 160, 90, 420))
+
+    return {
+      treeDensityMultiplier,
+      volcanoIntervalMinTicks,
+      volcanoIntervalMaxTicks,
+      volcanoMaxLavaTiles,
     }
   }
 

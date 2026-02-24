@@ -1,61 +1,50 @@
 import type { Application } from 'pixi.js'
 
+import { GameStateMachine } from '../core/GameStateMachine'
+import { SaveManager } from '../save/SaveManager'
+import { SettingsStore } from '../settings/SettingsStore'
 import { MainLoop } from './core/mainLoop'
 import { createRenderer } from './core/renderer'
-import type { Scene } from './scenes/Scene'
-import { TerrainScene } from './scenes/TerrainScene'
-import { TerrainGenerator } from './terrain/TerrainGenerator'
-import type { TerrainGenConfig, TerrainMap } from '../types/terrain'
+import { BootScene } from '../scenes/BootScene'
+import { LoadingScene } from '../scenes/LoadingScene'
+import { MainMenuScene } from '../scenes/MainMenuScene'
+import { WorldCreateScene } from '../scenes/WorldCreateScene'
+import { WorldLoadScene } from '../scenes/WorldLoadScene'
+import { WorldScene } from '../scenes/WorldScene'
+import type { GameSceneId, GameScenePayload, SceneRuntimeContext } from '../scenes/types'
 
 export class Game {
   private static readonly TILE_SIZE = 8
 
   private app: Application | null = null
-  private scene: Scene | null = null
-  private readonly terrainGenerator = new TerrainGenerator()
-  private terrainMap: TerrainMap | null = null
+  private host: HTMLElement | null = null
+
   private readonly mainLoop = new MainLoop()
   private unsubscribeLoop: (() => void) | null = null
 
+  private stateMachine: GameStateMachine<GameSceneId, GameScenePayload> | null = null
+  private saveManager: SaveManager | null = null
+  private settingsStore: SettingsStore | null = null
+
   async mount(container: HTMLElement): Promise<void> {
+    this.host = container
     this.app = await createRenderer(container)
-    const tileSize = Game.TILE_SIZE
-    const seedFromQuery = (() => {
-      if (typeof window === 'undefined') {
-        return null
-      }
-      const raw = new URLSearchParams(window.location.search).get('seed')
-      if (!raw) {
-        return null
-      }
-      const value = Number(raw)
-      return Number.isFinite(value) ? Math.floor(value) : null
-    })()
-    const worldSeed = seedFromQuery ?? Math.floor(Math.random() * 100000000)
 
-    const terrainConfig: TerrainGenConfig = {
-      width: Math.max(1, Math.floor(this.app.screen.width / tileSize)),
-      height: Math.max(1, Math.floor(this.app.screen.height / tileSize)),
-      seed: worldSeed,
-      heightScale: 96,
-      moistureScale: 78,
-      tempScale: 120,
-      seaLevel: 0.42,
-      shallowWater: 0.48,
-      beachBand: 0.03,
-      mountainLevel: 0.8,
-      snowTemp: 0.34,
-    }
-
-    this.terrainMap = this.terrainGenerator.generate(terrainConfig)
-    const terrainScene = new TerrainScene(this.app, this.terrainMap, tileSize)
-    terrainScene.mount()
-    this.scene = terrainScene
-    this.unsubscribeLoop = this.mainLoop.add((deltaMs) => {
-      this.scene?.update(deltaMs)
+    this.settingsStore = new SettingsStore()
+    this.saveManager = new SaveManager({
+      autosaveIntervalSec: this.settingsStore.get().gameplay.autosaveIntervalSec,
     })
 
+    this.stateMachine = new GameStateMachine<GameSceneId, GameScenePayload>((state, payload) => {
+      return this.createScene(state, payload)
+    })
+
+    this.unsubscribeLoop = this.mainLoop.add((deltaMs) => {
+      this.stateMachine?.update(deltaMs)
+    })
     this.mainLoop.start(this.app)
+
+    await this.stateMachine.start('boot')
   }
 
   destroy(): void {
@@ -63,12 +52,58 @@ export class Game {
     this.unsubscribeLoop?.()
     this.unsubscribeLoop = null
 
-    this.scene?.destroy()
-    this.scene = null
+    void this.stateMachine?.destroy()
+    this.stateMachine = null
 
-    this.terrainMap = null
+    this.saveManager = null
+    this.settingsStore = null
 
     this.app?.destroy(true, { children: true })
     this.app = null
+    this.host = null
+  }
+
+  private createScene(state: GameSceneId, payload?: GameScenePayload) {
+    const ctx = this.buildContext()
+
+    if (state === 'boot') {
+      return new BootScene(ctx)
+    }
+    if (state === 'mainMenu') {
+      return new MainMenuScene(ctx)
+    }
+    if (state === 'worldCreate') {
+      return new WorldCreateScene(ctx)
+    }
+    if (state === 'worldLoad') {
+      return new WorldLoadScene(ctx, payload)
+    }
+    if (state === 'loading') {
+      return new LoadingScene(ctx, payload)
+    }
+    return new WorldScene(ctx, payload)
+  }
+
+  private buildContext(): SceneRuntimeContext {
+    if (!this.app || !this.host || !this.saveManager || !this.settingsStore || !this.stateMachine) {
+      throw new Error('Game context is not ready')
+    }
+
+    return {
+      app: this.app,
+      host: this.host,
+      saveManager: this.saveManager,
+      settingsStore: this.settingsStore,
+      tileSize: Game.TILE_SIZE,
+      navigate: async (scene, payload) => {
+        await this.stateMachine?.go(scene, payload)
+      },
+      requestQuit: () => {
+        if (typeof window !== 'undefined') {
+          window.close()
+        }
+        void this.stateMachine?.go('mainMenu')
+      },
+    }
   }
 }

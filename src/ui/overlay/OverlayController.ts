@@ -9,6 +9,7 @@ import { ItemsPage } from './pages/ItemsPage'
 import { LogsPage } from './pages/LogsPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { SpeciesPage } from './pages/SpeciesPage'
+import { StructuresPage } from './pages/StructuresPage'
 import { WorldGenesisPage } from './pages/WorldGenesisPage'
 import type {
   OverlayActionHandler,
@@ -25,6 +26,7 @@ const TAB_ORDER: OverlayTabId[] = [
   'species',
   'environment',
   'worldGenesis',
+  'structures',
   'civilizations',
   'individuals',
   'items',
@@ -167,6 +169,14 @@ export class OverlayController {
     }
   }
 
+  setHudVisible(visible: boolean): void {
+    this.root.setVisible(visible)
+  }
+
+  isHudVisible(): boolean {
+    return this.root.isVisible()
+  }
+
   private emit(actionName: OverlayActionName, payload?: OverlayActionPayload): void {
     for (const listener of this.actionListeners) {
       listener(actionName, payload)
@@ -188,6 +198,7 @@ export class OverlayController {
       new SpeciesPage(emit),
       new EnvironmentPage(emit),
       new WorldGenesisPage(),
+      new StructuresPage(emit),
       new CivilizationsPage(emit),
       new IndividualsPage(emit),
       new ItemsPage(emit),
@@ -222,6 +233,7 @@ export class OverlayController {
     this.root.playPauseBtn.addEventListener('click', this.onPlayPauseClick)
     this.root.speedDownBtn.addEventListener('click', this.onSpeedDownClick)
     this.root.speedUpBtn.addEventListener('click', this.onSpeedUpClick)
+    this.root.saveBtn.addEventListener('click', this.onSaveClick)
     this.root.resetBtn.addEventListener('click', this.onResetClick)
     this.root.worldViewBtn.addEventListener('click', this.onWorldViewClick)
     this.root.hideHudBtn.addEventListener('click', this.onHideHudClick)
@@ -238,6 +250,7 @@ export class OverlayController {
     this.root.playPauseBtn.removeEventListener('click', this.onPlayPauseClick)
     this.root.speedDownBtn.removeEventListener('click', this.onSpeedDownClick)
     this.root.speedUpBtn.removeEventListener('click', this.onSpeedUpClick)
+    this.root.saveBtn.removeEventListener('click', this.onSaveClick)
     this.root.resetBtn.removeEventListener('click', this.onResetClick)
     this.root.worldViewBtn.removeEventListener('click', this.onWorldViewClick)
     this.root.hideHudBtn.removeEventListener('click', this.onHideHudClick)
@@ -253,6 +266,10 @@ export class OverlayController {
 
   private readonly onSpeedUpClick = (): void => {
     this.emit('speedUp')
+  }
+
+  private readonly onSaveClick = (): void => {
+    this.emit('saveWorld')
   }
 
   private readonly onResetClick = (): void => {

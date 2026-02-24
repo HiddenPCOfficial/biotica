@@ -146,21 +146,29 @@ export class IndividualsPage implements OverlayPage {
       : selectedRow.inventoryItems.map((item) => `${item.itemId} x${item.quantity}`)
 
     const mental = selectedAgent?.mentalState ?? selectedRow.mentalState
+    const activePlan = selectedAgent?.activePlan ?? selectedRow.activePlan
 
     this.inspector.textContent = [
       `${selectedRow.name} (${selectedRow.role})`,
       `species=${speciesNameById.get(selectedRow.speciesId) ?? selectedRow.speciesId}`,
       `ethnicity=${selectedRow.ethnicityId ? ethnicityNameById.get(selectedRow.ethnicityId) ?? selectedRow.ethnicityId : '-'}`,
       `civilization=${selectedRow.factionName}`,
-      `goal=${selectedRow.goal} state=${selectedRow.activityState}`,
+      `intent=${selectedRow.currentIntent} goal=${selectedRow.goal} state=${selectedRow.activityState}`,
+      `lastAction=${selectedRow.lastAction}`,
+      activePlan
+        ? `plan=${activePlan.intent} ${activePlan.currentStepIndex + 1}/${activePlan.totalSteps} progress=${(clamp01(activePlan.progress01) * 100).toFixed(0)}% step=${activePlan.currentStepDescription}`
+        : 'plan=-',
       `energy=${selectedRow.energy.toFixed(1)} hydration=${selectedRow.hydration.toFixed(1)} age=${selectedRow.age.toFixed(1)}`,
       `inventory=${inventoryLines.length > 0 ? inventoryLines.join(' | ') : '-'}`,
       '',
       `mental.goal=${mental.currentGoal}`,
       `mental.reasons=${mental.lastReasonCodes.join(', ') || '-'}`,
       `mental.target=${mental.targetLabel} @ (${mental.targetX}, ${mental.targetY})`,
-      `mental.food=${(clamp01(mental.perceivedFoodLevel) * 100).toFixed(0)}% threat=${(clamp01(mental.perceivedThreatLevel) * 100).toFixed(0)}% stress=${(clamp01(mental.stressLevel) * 100).toFixed(0)}% loyalty=${(clamp01(mental.loyaltyToFaction) * 100).toFixed(0)}%`,
+      `mental.food=${(clamp01(mental.perceivedFoodLevel) * 100).toFixed(0)}% threat=${(clamp01(mental.perceivedThreatLevel) * 100).toFixed(0)}% stress=${(clamp01(mental.stressLevel) * 100).toFixed(0)}% loyalty=${(clamp01(mental.loyaltyToFaction) * 100).toFixed(0)}% tone=${mental.emotionalTone}`,
       selectedAgent?.thought ? `thought=${selectedAgent.thought}` : '',
+      selectedAgent?.latestMentalLog
+        ? `mentalLog[t${selectedAgent.latestMentalLog.tick}]=${selectedAgent.latestMentalLog.thought} :: ${selectedAgent.latestMentalLog.reasonCodes.join(', ') || '-'}`
+        : '',
     ]
       .filter(Boolean)
       .join('\n')

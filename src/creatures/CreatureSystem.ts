@@ -3,7 +3,7 @@ import { TileId } from '../game/enums/TileId'
 import type { WorldState } from '../world/WorldState'
 import { markDirtyTile } from '../world/WorldState'
 import { createRandomGenome, mutate } from './genetics/Genome'
-import { SpeciesRegistry } from './SpeciesRegistry'
+import { SpeciesRegistry, type SpeciesRegistryState } from './SpeciesRegistry'
 import type { Creature, Species, SpeciesStat } from './types'
 
 type CreatureHooks = {
@@ -55,6 +55,22 @@ type SpeciesCognitionState = {
   lastDialogueTick: number
   thoughtSamples: string[]
   dialogueSamples: string[]
+}
+
+export type CreatureSystemState = {
+  creatures: Creature[]
+  nextCreatureId: number
+  legacySeed: number
+  legacyAccumulatorMs: number
+  tuning: CreatureSimTuning
+  descriptionCache: Array<[string, string]>
+  speciesCognition: Array<[string, SpeciesCognitionState]>
+  processedEventIds: string[]
+  eventPulse: number
+  corpseTicks: number[]
+  corpseNutrients: number[]
+  corpseCursor: number
+  speciesRegistry: SpeciesRegistryState
 }
 
 const DEFAULT_TUNING: CreatureSimTuning = {
@@ -264,6 +280,135 @@ export class CreatureSystem {
     if (creature) {
       creature.description = description
     }
+  }
+
+  exportState(): CreatureSystemState {
+    return {
+      creatures: this.creatures.map((creature) => ({
+        ...creature,
+        genome: { ...creature.genome },
+        parentIds: creature.parentIds ? [...creature.parentIds] as [string, string] | [string] : undefined,
+      })),
+      nextCreatureId: this.nextCreatureId,
+      legacySeed: this.legacySeed,
+      legacyAccumulatorMs: this.legacyAccumulatorMs,
+      tuning: { ...this.tuning },
+      descriptionCache: Array.from(this.descriptionCache.entries()),
+      speciesCognition: Array.from(this.speciesCognition.entries()).map(([id, state]) => [
+        id,
+        {
+          intelligence: state.intelligence,
+          languageLevel: state.languageLevel,
+          socialComplexity: state.socialComplexity,
+          eventPressure: state.eventPressure,
+          firstIntelligentTick: state.firstIntelligentTick,
+          lastThoughtTick: state.lastThoughtTick,
+          lastDialogueTick: state.lastDialogueTick,
+          thoughtSamples: [...state.thoughtSamples],
+          dialogueSamples: [...state.dialogueSamples],
+        },
+      ]),
+      processedEventIds: Array.from(this.processedEventIds.values()),
+      eventPulse: this.eventPulse,
+      corpseTicks: Array.from(this.corpseTicks),
+      corpseNutrients: Array.from(this.corpseNutrients),
+      corpseCursor: this.corpseCursor,
+      speciesRegistry: this.speciesRegistry.exportState(),
+    }
+  }
+
+  hydrateState(state: CreatureSystemState): void {
+    this.speciesRegistry.hydrateState(state.speciesRegistry)
+
+    this.nextCreatureId = Math.max(1, state.nextCreatureId | 0)
+    this.legacySeed = state.legacySeed | 0
+    this.legacyAccumulatorMs = Number.isFinite(state.legacyAccumulatorMs) ? state.legacyAccumulatorMs : 0
+    this.tuning = {
+      baseMetabolism: clamp(state.tuning.baseMetabolism, 0.2, 3.2),
+      reproductionThreshold: clamp(state.tuning.reproductionThreshold, 0.5, 2.5),
+      reproductionCost: clamp(state.tuning.reproductionCost, 0.4, 2.5),
+      mutationRate: clamp(state.tuning.mutationRate, 0, 0.25),
+    }
+
+    this.creatures.length = 0
+    this.creaturesById.clear()
+    this.tileIndex.clear()
+    this.bucketIndex.clear()
+
+    const rows = Array.isArray(state.creatures) ? state.creatures : []
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
+      if (!row || !row.id || !row.speciesId) continue
+      const creature: Creature = {
+        id: row.id,
+        speciesId: row.speciesId,
+        name: row.name,
+        energy: row.energy,
+        health: row.health,
+        hydration: row.hydration,
+        waterNeed: row.waterNeed,
+        age: row.age,
+        maxAge: row.maxAge,
+        x: row.x | 0,
+        y: row.y | 0,
+        generation: row.generation | 0,
+        parentIds: row.parentIds ? [...row.parentIds] as [string, string] | [string] : undefined,
+        genome: { ...row.genome },
+        tempStress: row.tempStress,
+        humidityStress: row.humidityStress,
+        description: row.description,
+      }
+      this.creatures.push(creature)
+      this.creaturesById.set(creature.id, creature)
+    }
+
+    this.descriptionCache.clear()
+    const cacheRows = Array.isArray(state.descriptionCache) ? state.descriptionCache : []
+    for (let i = 0; i < cacheRows.length; i++) {
+      const row = cacheRows[i]
+      if (!row || row.length < 2) continue
+      const key = row[0]
+      const value = row[1]
+      if (typeof key !== 'string' || typeof value !== 'string') continue
+      this.descriptionCache.set(key, value)
+    }
+
+    this.speciesCognition.clear()
+    const cognitionRows = Array.isArray(state.speciesCognition) ? state.speciesCognition : []
+    for (let i = 0; i < cognitionRows.length; i++) {
+      const row = cognitionRows[i]
+      if (!row || row.length < 2) continue
+      const speciesId = row[0]
+      const value = row[1]
+      if (!speciesId || !value) continue
+      this.speciesCognition.set(speciesId, {
+        intelligence: value.intelligence,
+        languageLevel: value.languageLevel,
+        socialComplexity: value.socialComplexity,
+        eventPressure: value.eventPressure,
+        firstIntelligentTick: value.firstIntelligentTick ?? null,
+        lastThoughtTick: value.lastThoughtTick | 0,
+        lastDialogueTick: value.lastDialogueTick | 0,
+        thoughtSamples: Array.isArray(value.thoughtSamples) ? [...value.thoughtSamples] : [],
+        dialogueSamples: Array.isArray(value.dialogueSamples) ? [...value.dialogueSamples] : [],
+      })
+    }
+
+    this.processedEventIds.clear()
+    const eventIds = Array.isArray(state.processedEventIds) ? state.processedEventIds : []
+    for (let i = 0; i < eventIds.length; i++) {
+      const id = eventIds[i]
+      if (typeof id !== 'string') continue
+      this.processedEventIds.add(id)
+    }
+    this.eventPulse = clamp(state.eventPulse ?? 0, 0, 1)
+
+    this.corpseTicks = new Int16Array(Array.isArray(state.corpseTicks) ? state.corpseTicks : [])
+    this.corpseNutrients = new Uint8Array(Array.isArray(state.corpseNutrients) ? state.corpseNutrients : [])
+    this.corpseCursor = Math.max(0, Math.min(this.corpseTicks.length, state.corpseCursor | 0))
+
+    this.rebuildSpatialIndex()
+    this.updateSpeciesPopulations()
   }
 
   spawnInitialPopulation(
