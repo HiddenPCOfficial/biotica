@@ -1,0 +1,17 @@
+export enum TileId {
+  DeepWater = 0,
+  ShallowWater = 1,
+  Beach = 2,
+  Grassland = 3,
+  Forest = 4,
+  Jungle = 5,
+  Desert = 6,
+  Savanna = 7,
+  Swamp = 8,
+  Hills = 9,
+  Mountain = 10,
+  Snow = 11,
+  Rock = 12,
+  Lava = 13,
+  Scorched = 14,
+}
