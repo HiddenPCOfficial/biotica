@@ -1,6 +1,6 @@
 import type { SeededRng } from '../core/SeededRng'
 import { TileId } from '../game/enums/TileId'
-import type { WorldState } from '../world/WorldState'
+import type { WorldState } from '../world/types'
 import type { Agent, AgentGoal, Faction, ReasonCode } from './types'
 
 export type AgentDecision = {

@@ -3,7 +3,7 @@ import { ChatPromptTemplate } from '@langchain/core/prompts'
 import { initChatModel } from 'langchain/chat_models/universal'
 
 import { getAiModelConfig, type AiModelConfig } from './AiModelRegistry'
-import type { Creature, CreatureGenome, Species } from '../creatures/types'
+import type { Creature, CreatureGenome, Species } from '../sim/types'
 import { TileId } from '../game/enums/TileId'
 import type { TerrainMap } from '../types/terrain'
 

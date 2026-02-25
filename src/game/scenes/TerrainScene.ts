@@ -11,15 +11,14 @@ import { CreatureDescriptionService } from '../../ai/llm/services/CreatureDescri
 import { WorldKnowledgePack } from '../../ai/WorldKnowledgePack'
 import { ToolRouter } from '../../ai/llm/tools/ToolRouter'
 import { SeededRng } from '../../core/SeededRng'
-import { CreatureRenderer } from '../../creatures/CreatureRenderer'
+import { CreatureRenderer } from '../../render/CreatureRenderer'
 import {
   CreatureSystem,
-  type Bounds,
   type CreatureHooks,
   type CreatureSystemState,
-} from '../../creatures/CreatureSystem'
-import { SpeciesRegistry } from '../../creatures/SpeciesRegistry'
-import type { Species } from '../../creatures/types'
+} from '../../sim/CreatureSystem'
+import { SpeciesRegistry } from '../../sim/SpeciesRegistry'
+import type { Bounds, Species } from '../../sim/types'
 import { CivSystem, type CivSystemState } from '../../civ/CivSystem'
 import type { Agent, AgentInspectorData, CivTimelineCategory, Structure } from '../../civ/types'
 import { EventSystem, type EventSystemState } from '../../events/EventSystem'
@@ -34,13 +33,13 @@ import { MaterialCatalogGenerator } from '../../materials/MaterialCatalogGenerat
 import {
   ResourceNodeSystem,
   type ResourceNodeSystemState,
-} from '../../resources/ResourceNodeSystem'
+} from '../../world/ResourceNodeSystem'
 import { StructureCatalog } from '../../structures/StructureCatalog'
 import { StructureCatalogGenerator } from '../../structures/StructureCatalogGenerator'
-import { StructureRenderer } from '../../structures/StructureRenderer'
+import { StructureRenderer } from '../../render/StructureRenderer'
 import { StructureSystem, type StructureSystemState } from '../../structures/StructureSystem'
-import type { HeatmapMode } from '../../render/ChunkedTerrainRenderer'
-import { ChunkedTerrainRenderer } from '../../render/ChunkedTerrainRenderer'
+import { TerrainRenderer } from '../../render/TerrainRenderer'
+import type { HeatmapMode } from '../../render/types'
 import { SimulationLog } from '../../log/SimulationLog'
 import { MetricsCollector } from '../../metrics/MetricsCollector'
 import type {
@@ -56,12 +55,13 @@ import { DEFAULT_SIM_TUNING, type SimTuning } from '../../sim/SimTuning'
 import { CreatureInspector } from '../../ui/CreatureInspector'
 import { PlantSystem } from '../../world/PlantSystem'
 import { VolcanoSystem, type VolcanoSystemState } from '../../world/VolcanoSystem'
-import { createWorldState, markAllDirty, type WorldState } from '../../world/WorldState'
+import { createWorldState, markAllDirty } from '../../world/WorldState'
+import type { WorldState } from '../../world/types'
 import { EnvironmentUpdater } from '../../world/EnvironmentUpdater'
-import { Camera2D } from '../camera/Camera2D'
+import { Camera2D } from '../../core/Camera2D'
+import { screenToWorldPoint } from '../../render/picking'
 import { TileId } from '../enums/TileId'
 import { TerrainGenerator } from '../terrain/TerrainGenerator'
-import { screenToWorld } from '../utils/screenToWorld'
 import type { TerrainGenConfig, TerrainMap } from '../../types/terrain'
 
 const TARGET_TPS = 20
@@ -322,7 +322,7 @@ export class TerrainScene implements Scene {
   private resetToken = 0
   private resetInFlight: Promise<void> | null = null
 
-  private terrainRenderer: ChunkedTerrainRenderer | null = null
+  private terrainRenderer: TerrainRenderer | null = null
   private readonly creatureRenderer: CreatureRenderer
 
   private readonly civTerritoryGraphics = new Graphics()
@@ -334,6 +334,7 @@ export class TerrainScene implements Scene {
   private readonly jumpHighlightGraphics = new Graphics()
   private lastTerritoryVersion = -1
   private lastTerritoryStride = -1
+  private structureHighlightClearTimer: number | null = null
   private jumpHighlightTileX = -1
   private jumpHighlightTileY = -1
   private jumpHighlightEndMs = 0
@@ -793,6 +794,7 @@ export class TerrainScene implements Scene {
   }
 
   destroy(): void {
+    this.clearScheduledStructureHighlight()
     this.unbindInput()
     this.overlay?.unmount()
     this.overlay = null
@@ -846,6 +848,7 @@ export class TerrainScene implements Scene {
     seed: number,
     mapOverride?: TerrainMap,
   ): Promise<void> {
+    this.clearScheduledStructureHighlight()
     this.seed = seed | 0
     this.simAccumulatorMs = 0
     this.panelAccumulatorMs = 0
@@ -999,7 +1002,7 @@ export class TerrainScene implements Scene {
     this.syncWorldStructuresFromCiv()
 
     if (!this.terrainRenderer) {
-      this.terrainRenderer = new ChunkedTerrainRenderer(this.worldState, {
+      this.terrainRenderer = new TerrainRenderer(this.worldState, {
         tileSize: this.tileSize,
       })
       this.terrainRenderer.mount(this.worldContainer)
@@ -1174,13 +1177,14 @@ export class TerrainScene implements Scene {
       return
     }
 
+    const bounds = this.computeViewportTileBounds()
+    this.terrainRenderer.setViewportBounds(bounds)
     this.terrainRenderer.setAtmosphereOverlay(this.lastOverlay)
     this.terrainRenderer.renderDirty()
 
     const zoom = this.camera.zoom
     this.creatureRenderer.setDetailVisible(zoom >= 3)
 
-    const bounds = this.computeViewportTileBounds()
     this.creatureRenderer.renderCreatures({ zoom, bounds })
     this.renderPlantHeatmap(bounds, zoom)
     this.renderCivLayers(bounds, zoom)
@@ -1465,7 +1469,7 @@ export class TerrainScene implements Scene {
   }
 
   private handleCanvasClick(clientX: number, clientY: number): void {
-    const point = screenToWorld(this.app.canvas, this.worldContainer, clientX, clientY)
+    const point = screenToWorldPoint(this.app.canvas, this.worldContainer, clientX, clientY)
     const tileX = point.x / this.tileSize
     const tileY = point.y / this.tileSize
     const tileXI = Math.floor(tileX)
@@ -2842,13 +2846,25 @@ export class TerrainScene implements Scene {
     return true
   }
 
-  focusFirstStructureByDefinition(defId: string): boolean {
+  focusFirstStructureByDefinition(defId: string, clearAfterMs = 0): boolean {
     const list = this.structureSystem?.getAll() ?? []
     const match = list.find((row) => row.defId === defId)
     if (!match) {
       return false
     }
-    return this.focusStructureInstanceById(match.id)
+    const focused = this.focusStructureInstanceById(match.id)
+    if (focused && clearAfterMs > 0) {
+      this.scheduleStructureHighlightClear(clearAfterMs)
+    }
+    return focused
+  }
+
+  clearStructureSelection(): void {
+    this.clearScheduledStructureHighlight()
+    this.selectedStructureId = null
+    this.structureRenderer?.setHighlight(null)
+    this.renderFrameLayers()
+    this.updateOverlayNow()
   }
 
   exportRuntimeStateInput(): TerrainRuntimeStateInput {
@@ -2873,6 +2889,23 @@ export class TerrainScene implements Scene {
       },
       simTuning: { ...this.simTuning },
     }
+  }
+
+  private scheduleStructureHighlightClear(delayMs: number): void {
+    this.clearScheduledStructureHighlight()
+    const safeDelay = Math.max(250, Math.floor(delayMs))
+    this.structureHighlightClearTimer = window.setTimeout(() => {
+      this.structureHighlightClearTimer = null
+      this.clearStructureSelection()
+    }, safeDelay)
+  }
+
+  private clearScheduledStructureHighlight(): void {
+    if (this.structureHighlightClearTimer === null) {
+      return
+    }
+    window.clearTimeout(this.structureHighlightClearTimer)
+    this.structureHighlightClearTimer = null
   }
 
   async hydrateRuntimeState(input: TerrainRuntimeStateInput): Promise<void> {

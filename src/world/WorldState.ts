@@ -1,77 +1,15 @@
 import type { TerrainMap } from '../types/terrain'
 import { TileId } from '../game/enums/TileId'
-
-export type RecentEventEntry = {
-  id: string
-  type: string
-  tick: number
-  x: number
-  y: number
-  summary?: string
-}
-
-export type VolcanoAnchor = Readonly<{
-  x: number
-  y: number
-}>
-
-export type VolcanoState = {
-  anchor: VolcanoAnchor
-  minIntervalTicks: number
-  maxIntervalTicks: number
-  maxLavaTiles: number
-  nextEruptionTick: number
-  activeEruptionId: string | null
-}
-
-export type WorldState = TerrainMap & {
-  humidity: Uint8Array
-  temperature: Uint8Array
-  fertility: Uint8Array
-  hazard: Uint8Array
-  plantBiomass: Uint8Array
-  volcano: VolcanoState
-
-  tick: number
-
-  index: (x: number, y: number) => number
-  inBounds: (x: number, y: number) => boolean
-
-  chunkSize: number
-  chunksX: number
-  chunksY: number
-  dirtyChunks: Uint8Array
-
-  recentEvents: RecentEventEntry[]
-}
-
-const UINT32_MAX = 4294967295
-
-function hash2D(seed: number, x: number, y: number): number {
-  let h = Math.imul(seed | 0, 0x9e3779b1)
-  h ^= Math.imul(x | 0, 0x85ebca6b)
-  h ^= Math.imul(y | 0, 0xc2b2ae35)
-  h ^= h >>> 16
-  h = Math.imul(h, 0x7feb352d)
-  h ^= h >>> 15
-  h = Math.imul(h, 0x846ca68b)
-  h ^= h >>> 16
-  return (h >>> 0) / UINT32_MAX
-}
-
-function clampByte(value: number): number {
-  if (value < 0) return 0
-  if (value > 255) return 255
-  return value | 0
-}
-
-function isVolcanoCandidate(tile: TileId): boolean {
-  return tile === TileId.Mountain || tile === TileId.Rock || tile === TileId.Hills || tile === TileId.Snow
-}
-
-function isLandTile(tile: TileId): boolean {
-  return tile !== TileId.DeepWater && tile !== TileId.ShallowWater && tile !== TileId.Lava
-}
+import { clampByte, hash2D } from '../shared/math'
+import {
+  fertilityBase,
+  humidityBase,
+  isLandTile,
+  isVolcanoCandidate,
+  temperatureBase,
+} from './Biomes'
+import { DEFAULT_WORLD_RUNTIME_CONFIG } from './WorldConfig'
+import type { RecentEventEntry, VolcanoAnchor, VolcanoState, WorldState } from './types'
 
 function pickVolcanoAnchor(tiles: Uint8Array, width: number, height: number, seed: number): VolcanoAnchor {
   let bestIndex = -1
@@ -102,109 +40,6 @@ function pickVolcanoAnchor(tiles: Uint8Array, width: number, height: number, see
   return Object.freeze({ x, y })
 }
 
-function humidityBase(tile: TileId): number {
-  switch (tile) {
-    case TileId.DeepWater:
-    case TileId.ShallowWater:
-      return 245
-    case TileId.Beach:
-      return 150
-    case TileId.Forest:
-    case TileId.Jungle:
-      return 205
-    case TileId.Swamp:
-      return 225
-    case TileId.Desert:
-      return 28
-    case TileId.Savanna:
-      return 95
-    case TileId.Hills:
-      return 118
-    case TileId.Mountain:
-    case TileId.Snow:
-      return 88
-    case TileId.Rock:
-    case TileId.Scorched:
-      return 35
-    case TileId.Lava:
-      return 0
-    case TileId.Grassland:
-    default:
-      return 140
-  }
-}
-
-function temperatureBase(tile: TileId): number {
-  switch (tile) {
-    case TileId.DeepWater:
-      return 96
-    case TileId.ShallowWater:
-      return 105
-    case TileId.Snow:
-      return 42
-    case TileId.Mountain:
-      return 76
-    case TileId.Hills:
-      return 106
-    case TileId.Desert:
-      return 206
-    case TileId.Savanna:
-      return 185
-    case TileId.Jungle:
-      return 182
-    case TileId.Forest:
-      return 132
-    case TileId.Swamp:
-      return 148
-    case TileId.Beach:
-      return 154
-    case TileId.Rock:
-      return 128
-    case TileId.Lava:
-      return 255
-    case TileId.Scorched:
-      return 178
-    case TileId.Grassland:
-    default:
-      return 138
-  }
-}
-
-function fertilityBase(tile: TileId): number {
-  switch (tile) {
-    case TileId.DeepWater:
-      return 18
-    case TileId.ShallowWater:
-      return 30
-    case TileId.Beach:
-      return 38
-    case TileId.Forest:
-    case TileId.Jungle:
-      return 210
-    case TileId.Swamp:
-      return 180
-    case TileId.Grassland:
-      return 165
-    case TileId.Savanna:
-      return 110
-    case TileId.Desert:
-      return 18
-    case TileId.Hills:
-      return 92
-    case TileId.Mountain:
-    case TileId.Snow:
-      return 28
-    case TileId.Rock:
-      return 36
-    case TileId.Scorched:
-      return 22
-    case TileId.Lava:
-      return 0
-    default:
-      return 88
-  }
-}
-
 /**
  * Inizializza stato dinamico del mondo a partire da TerrainMap.
  * Le mappe ambientali sono deterministiche in base al seed.
@@ -212,7 +47,7 @@ function fertilityBase(tile: TileId): number {
 export function createWorldState(
   map: TerrainMap,
   seed = map.seed,
-  chunkSize = 64,
+  chunkSize = DEFAULT_WORLD_RUNTIME_CONFIG.chunkSize,
 ): WorldState {
   const width = map.width
   const height = map.height
@@ -266,6 +101,17 @@ export function createWorldState(
   dirtyChunks.fill(1)
   const volcanoAnchor = pickVolcanoAnchor(tiles, width, height, seed)
 
+  const volcanoConfig = DEFAULT_WORLD_RUNTIME_CONFIG.volcano
+
+  const volcanoState: VolcanoState = {
+    anchor: volcanoAnchor,
+    minIntervalTicks: volcanoConfig.minIntervalTicks,
+    maxIntervalTicks: volcanoConfig.maxIntervalTicks,
+    maxLavaTiles: volcanoConfig.maxLavaTiles,
+    nextEruptionTick: 0,
+    activeEruptionId: null,
+  }
+
   const state: WorldState = {
     width,
     height,
@@ -276,14 +122,7 @@ export function createWorldState(
     fertility,
     hazard,
     plantBiomass,
-    volcano: {
-      anchor: volcanoAnchor,
-      minIntervalTicks: 8000,
-      maxIntervalTicks: 16000,
-      maxLavaTiles: 180,
-      nextEruptionTick: 0,
-      activeEruptionId: null,
-    },
+    volcano: volcanoState,
     tick: 0,
     index: (x: number, y: number) => y * width + x,
     inBounds: (x: number, y: number) => x >= 0 && y >= 0 && x < width && y < height,
@@ -366,9 +205,15 @@ export function consumeDirtyChunks(state: WorldState, target: number[] = []): nu
   return target
 }
 
-export function pushRecentEvent(state: WorldState, entry: RecentEventEntry, maxSize = 48): void {
+export function pushRecentEvent(
+  state: WorldState,
+  entry: RecentEventEntry,
+  maxSize = DEFAULT_WORLD_RUNTIME_CONFIG.maxRecentEvents,
+): void {
   state.recentEvents.push(entry)
   if (state.recentEvents.length > maxSize) {
     state.recentEvents.splice(0, state.recentEvents.length - maxSize)
   }
 }
+
+export type { RecentEventEntry, VolcanoAnchor, VolcanoState, WorldState }

@@ -1,4 +1,4 @@
-import type { WorldState } from '../world/WorldState'
+import type { WorldState } from '../world/types'
 import type {
   Agent,
   Faction,

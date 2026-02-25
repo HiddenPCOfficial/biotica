@@ -3,7 +3,7 @@ import { ChatPromptTemplate } from '@langchain/core/prompts'
 import { initChatModel } from 'langchain/chat_models/universal'
 
 import { getAiModelConfig, type AiModelConfig } from './AiModelRegistry'
-import type { Creature, Species } from '../creatures/types'
+import type { Creature, Species } from '../sim/types'
 
 type DescriptionContext = {
   biomeName?: string

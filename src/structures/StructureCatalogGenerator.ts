@@ -1,5 +1,5 @@
 import type { MaterialCatalog } from '../materials/MaterialCatalog'
-import type { WorldState } from '../world/WorldState'
+import type { WorldState } from '../world/types'
 import { StructureCatalog, type StructureDefinition } from './StructureCatalog'
 
 function averageBiomass(world: WorldState): number {

@@ -1,6 +1,6 @@
 import type { DroughtEvent } from '../EventTypes'
 import { TileId } from '../../game/enums/TileId'
-import type { WorldState } from '../../world/WorldState'
+import type { WorldState } from '../../world/types'
 import { clampByte, processEllipseBatch, randomSigned } from './eventUtils'
 
 type DroughtCreateParams = {

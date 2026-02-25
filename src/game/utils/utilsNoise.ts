@@ -1,36 +1,7 @@
 import { TileId } from '../enums/TileId'
+import { clamp01, hash2D, lerp, smoothstep, UINT32_MAX } from '../../shared/math'
 
-export const UINT32_MAX = 4294967295
-
-export function clamp01(value: number): number {
-  if (value < 0) return 0
-  if (value > 1) return 1
-  return value
-}
-
-export function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t
-}
-
-export function smoothstep(t: number): number {
-  const x = clamp01(t)
-  return x * x * (3 - 2 * x)
-}
-
-/**
- * Hash deterministico 2D -> [0, 1], stabile cross-platform grazie a Math.imul.
- */
-export function hash2D(seed: number, x: number, y: number): number {
-  let h = Math.imul(seed | 0, 0x9e3779b1)
-  h ^= Math.imul(x | 0, 0x85ebca6b)
-  h ^= Math.imul(y | 0, 0xc2b2ae35)
-  h ^= h >>> 16
-  h = Math.imul(h, 0x7feb352d)
-  h ^= h >>> 15
-  h = Math.imul(h, 0x846ca68b)
-  h ^= h >>> 16
-  return (h >>> 0) / UINT32_MAX
-}
+export { UINT32_MAX, clamp01, hash2D, lerp, smoothstep }
 
 /**
  * Value noise bilineare su griglia hashata.

@@ -1,6 +1,6 @@
 import { TileId } from '../game/enums/TileId'
 import type { SeededRng } from '../core/SeededRng'
-import type { WorldState } from '../world/WorldState'
+import type { WorldState } from '../world/types'
 import type {
   Agent,
   AgentIntent,

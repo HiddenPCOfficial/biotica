@@ -2,8 +2,8 @@ import type { CivMetricsPoint, CivTimelineEntry, DialogueRecord, FactionSummary,
 import type { ActiveEvent } from '../events/EventTypes'
 import type { LogCategory, LogEntry } from '../log/SimulationLog'
 import type { TopSpeciesSeries } from '../metrics/MetricsCollector'
-import type { SpeciesStat } from '../creatures/types'
-import type { RecentEventEntry } from '../world/WorldState'
+import type { SpeciesStat } from '../sim/types'
+import type { RecentEventEntry } from '../world/types'
 
 type OverlayMode = 'none' | 'humidity' | 'temperature' | 'hazard'
 

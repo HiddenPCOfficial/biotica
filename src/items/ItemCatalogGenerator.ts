@@ -1,7 +1,7 @@
 import { TileId } from '../game/enums/TileId'
 import type { MaterialCatalog } from '../materials/MaterialCatalog'
 import type { FrozenMaterialDefinition } from '../materials/MaterialTypes'
-import type { WorldState } from '../world/WorldState'
+import type { WorldState } from '../world/types'
 import { ItemCatalog, type ItemDefinition } from './ItemCatalog'
 
 function clamp(value: number, min: number, max: number): number {

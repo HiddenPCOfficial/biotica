@@ -1,5 +1,5 @@
 import { TileId } from '../game/enums/TileId'
-import type { WorldState } from '../world/WorldState'
+import type { WorldState } from '../world/types'
 import type { BuildTask, Faction, Structure, StructureType } from './types'
 
 export type BuildResult = {

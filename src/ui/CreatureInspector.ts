@@ -1,6 +1,6 @@
 import { CreatureDescriptionService } from '../ai/llm/services/CreatureDescriptionService'
-import { CreatureSystem } from '../creatures/CreatureSystem'
-import type { Creature, Species } from '../creatures/types'
+import { CreatureSystem } from '../sim/CreatureSystem'
+import type { Creature, Species } from '../sim/types'
 
 type InspectorContext = {
   biomeName?: string

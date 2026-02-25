@@ -14,11 +14,11 @@ import type {
   Structure,
   TerritorySummary,
 } from '../../civ/types'
-import type { SpeciesStat } from '../../creatures/types'
+import type { SpeciesStat } from '../../sim/types'
 import type { ActiveEvent } from '../../events/EventTypes'
 import type { LogEntry as SimLogEntry } from '../../log/SimulationLog'
 import type { SimTuning } from '../../sim/SimTuning'
-import type { RecentEventEntry, WorldState } from '../../world/WorldState'
+import type { RecentEventEntry, WorldState } from '../../world/types'
 import type {
   AlertItem,
   DataPoint,

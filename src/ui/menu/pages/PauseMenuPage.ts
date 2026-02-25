@@ -1,6 +1,7 @@
 export type PauseMenuActions = {
   onResume: () => void
   onSave: () => void
+  onStructures: () => void
   onSettings: () => void
   onExitToMenu: () => void
   onQuit: () => void
@@ -31,11 +32,12 @@ export class PauseMenuPage {
 
     const resumeBtn = this.makeButton('Resume', () => this.actions.onResume())
     this.saveButton = this.makeButton('Save', () => this.actions.onSave())
+    const structuresBtn = this.makeButton('Structures', () => this.actions.onStructures(), 'ghost')
     const settingsBtn = this.makeButton('Settings', () => this.actions.onSettings(), 'ghost')
     const exitBtn = this.makeButton('Exit to Main Menu', () => this.actions.onExitToMenu(), 'ghost')
     const quitBtn = this.makeButton('Quit', () => this.actions.onQuit(), 'danger')
 
-    actionsBox.append(resumeBtn, this.saveButton, settingsBtn, exitBtn, quitBtn)
+    actionsBox.append(resumeBtn, this.saveButton, structuresBtn, settingsBtn, exitBtn, quitBtn)
     this.root.append(title, subtitle, this.status, actionsBox)
   }
 

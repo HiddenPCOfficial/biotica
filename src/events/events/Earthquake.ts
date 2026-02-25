@@ -1,6 +1,6 @@
 import type { EarthquakeEvent } from '../EventTypes'
 import { TileId } from '../../game/enums/TileId'
-import type { WorldState } from '../../world/WorldState'
+import type { WorldState } from '../../world/types'
 import { isInsideWorld, markDirtyTile, worldIndex } from '../../world/WorldState'
 import { clampByte, hash } from './eventUtils'
 

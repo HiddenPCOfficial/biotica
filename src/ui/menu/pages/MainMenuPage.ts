@@ -1,6 +1,7 @@
 export type MainMenuActions = {
   onNewWorld: () => void
   onLoadWorld: () => void
+  onStructures: () => void
   onSettings: () => void
   onQuit: () => void
 }
@@ -25,6 +26,7 @@ export class MainMenuPage {
     actionsBox.append(
       this.makeButton('New World', actions.onNewWorld),
       this.makeButton('Load World', actions.onLoadWorld),
+      this.makeButton('Structures', actions.onStructures),
       this.makeButton('Settings', actions.onSettings),
       this.makeButton('Quit', actions.onQuit, 'ghost'),
     )

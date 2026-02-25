@@ -1,10 +1,11 @@
 import type { Application } from 'pixi.js'
 
 import { GameStateMachine } from '../core/GameStateMachine'
+import { MainLoop } from '../core/MainLoop'
+import { createRenderer } from '../core/Renderer'
 import { SaveManager } from '../save/SaveManager'
 import { SettingsStore } from '../settings/SettingsStore'
-import { MainLoop } from './core/mainLoop'
-import { createRenderer } from './core/renderer'
+import { DEFAULT_TILE_SIZE } from '../shared/constants'
 import { BootScene } from '../scenes/BootScene'
 import { LoadingScene } from '../scenes/LoadingScene'
 import { MainMenuScene } from '../scenes/MainMenuScene'
@@ -14,7 +15,7 @@ import { WorldScene } from '../scenes/WorldScene'
 import type { GameSceneId, GameScenePayload, SceneRuntimeContext } from '../scenes/types'
 
 export class Game {
-  private static readonly TILE_SIZE = 8
+  private static readonly TILE_SIZE = DEFAULT_TILE_SIZE
 
   private app: Application | null = null
   private host: HTMLElement | null = null

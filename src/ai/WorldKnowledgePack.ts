@@ -1,8 +1,8 @@
 import { TileId } from '../game/enums/TileId'
 import type { LogEntry } from '../log/SimulationLog'
 import type { SimulationSnapshot } from '../ui/overlay/types'
-import type { WorldState } from '../world/WorldState'
-import type { SpeciesStat, Creature } from '../creatures/types'
+import type { WorldState } from '../world/types'
+import type { SpeciesStat, Creature } from '../sim/types'
 
 type CivSnapshot = NonNullable<SimulationSnapshot['civ']>
 

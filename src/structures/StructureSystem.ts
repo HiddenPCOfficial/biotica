@@ -1,5 +1,5 @@
 import { TileId } from '../game/enums/TileId'
-import type { WorldState } from '../world/WorldState'
+import type { WorldState } from '../world/types'
 import type { FrozenStructureDefinition, StructureCatalog, StructureBuildCost } from './StructureCatalog'
 
 export type StructureState = 'building' | 'active' | 'damaged' | 'abandoned'

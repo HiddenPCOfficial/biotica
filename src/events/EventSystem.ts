@@ -1,5 +1,6 @@
-import type { SeededRng } from '../core/SeededRng'
-import type { RecentEventEntry, WorldState } from '../world/WorldState'
+import type { SeededRng } from '../shared/rng'
+import { clamp01 } from '../shared/math'
+import type { RecentEventEntry, WorldState } from '../world/types'
 import { pushRecentEvent } from '../world/WorldState'
 import type { ActiveEvent, AtmosphereOverlay, EventKind, EventStepResult } from './EventTypes'
 import { createDroughtEvent, stepDrought } from './events/Drought'
@@ -24,12 +25,6 @@ export type EventSystemState = {
   eventCounter: number
   lastSpawnTick: number
   eventRateMultiplier: number
-}
-
-function clamp01(value: number): number {
-  if (value < 0) return 0
-  if (value > 1) return 1
-  return value
 }
 
 /**

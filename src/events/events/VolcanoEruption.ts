@@ -1,6 +1,6 @@
 import type { VolcanoEruptionEvent } from '../EventTypes'
 import { TileId } from '../../game/enums/TileId'
-import type { WorldState } from '../../world/WorldState'
+import type { WorldState } from '../../world/types'
 import { indexToXY, clampByte, hash } from './eventUtils'
 import { isInsideWorld, markDirtyRect, markDirtyTile, worldIndex } from '../../world/WorldState'
 

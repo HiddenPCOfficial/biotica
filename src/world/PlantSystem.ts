@@ -1,22 +1,9 @@
-import { TileId } from '../game/enums/TileId'
 import type { SimTuning } from '../sim/SimTuning'
-import type { WorldState } from './WorldState'
+import { clampByte } from '../shared/math'
+import { TileId } from '../game/enums/TileId'
+import { isPlantBlockedTile } from './Biomes'
+import type { WorldState } from './types'
 import { markDirtyTile } from './WorldState'
-
-function clampByte(value: number): number {
-  if (value < 0) return 0
-  if (value > 255) return 255
-  return value | 0
-}
-
-function isPlantBlockedTile(tile: TileId): boolean {
-  return (
-    tile === TileId.DeepWater ||
-    tile === TileId.ShallowWater ||
-    tile === TileId.Lava ||
-    tile === TileId.Scorched
-  )
-}
 
 /**
  * Crescita biomassa vegetale tile-based.
@@ -54,7 +41,7 @@ export class PlantSystem {
       if (!isPlantBlockedTile(tile)) {
         const tempSweet = 1 - Math.min(1, Math.abs(temp - 0.55) * 1.7)
         const humSweet = 1 - Math.min(1, Math.abs(humidity - 0.6) * 1.6)
-        const growthEnv = Math.max(0, (fertility * 0.55 + humSweet * 0.3 + tempSweet * 0.15))
+        const growthEnv = Math.max(0, fertility * 0.55 + humSweet * 0.3 + tempSweet * 0.15)
         delta += tuning.plantBaseGrowth * growthEnv
 
         if (tile === TileId.Desert || tile === TileId.Rock) {

@@ -1,5 +1,5 @@
 import { TileId } from '../game/enums/TileId'
-import type { WorldState } from '../world/WorldState'
+import type { WorldState } from '../world/types'
 import { MaterialCatalog } from './MaterialCatalog'
 import type { BiomeType, MaterialDefinition } from './MaterialTypes'
 

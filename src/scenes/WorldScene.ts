@@ -8,9 +8,11 @@ import {
 } from '../save/SaveManager'
 import type { SavePreview } from '../save/SaveTypes'
 import type { GameSettings } from '../settings/SettingsStore'
+import { StructureUiAdapter } from '../ui/data/StructureUiAdapter'
 import { MenuRoot } from '../ui/menu/MenuRoot'
 import { PauseMenuPage } from '../ui/menu/pages/PauseMenuPage'
 import { SettingsPage } from '../ui/menu/pages/SettingsPage'
+import { StructuresPage } from '../ui/menu/pages/StructuresPage'
 import type { GameScenePayload, SceneRuntimeContext, WorldLaunchPayload } from './types'
 
 type PausePage = {
@@ -214,6 +216,9 @@ export class WorldScene implements StateScene {
       onSave: () => {
         void this.saveFromPause(page)
       },
+      onStructures: () => {
+        this.showPauseStructuresPage()
+      },
       onSettings: () => {
         this.showPauseSettingsPage()
       },
@@ -236,6 +241,39 @@ export class WorldScene implements StateScene {
       },
       onChange: (next) => {
         this.ctx.settingsStore.replace(next)
+      },
+    })
+    this.swapPausePage(page)
+  }
+
+  private showPauseStructuresPage(): void {
+    if (!this.terrainScene) {
+      return
+    }
+
+    const adapter = StructureUiAdapter.fromUnknown(this.terrainScene.exportSystemsSnapshot())
+    const subtitle = adapter
+      ? 'Current world structure catalog and buildability context.'
+      : 'Structure data unavailable for the current world.'
+
+    const page = new StructuresPage({
+      title: 'Structures',
+      subtitle,
+      adapter,
+      emptyMessage: 'No structure catalog available for this world.',
+      actions: {
+        onBack: () => {
+          this.showPausePage(this.getPauseStatusLabel())
+        },
+        onFocusInstance: (structureId) => {
+          this.terrainScene?.focusStructureInstanceById(structureId)
+        },
+        onFocusExamples: (defId) => {
+          this.terrainScene?.focusFirstStructureByDefinition(defId, 2200)
+        },
+        onBuildHint: (defId) => {
+          return adapter?.getBuildHint(defId) ?? null
+        },
       },
     })
     this.swapPausePage(page)

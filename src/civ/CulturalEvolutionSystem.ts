@@ -1,5 +1,5 @@
 import type { SeededRng } from '../core/SeededRng'
-import type { WorldState } from '../world/WorldState'
+import type { WorldState } from '../world/types'
 import type {
   CivStateLabel,
   CultureHistoryPoint,

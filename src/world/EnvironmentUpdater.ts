@@ -1,27 +1,8 @@
+import type { SeededRng } from '../shared/rng'
+import { clampByte, hash2D } from '../shared/math'
 import { TileId } from '../game/enums/TileId'
-import type { SeededRng } from '../core/SeededRng'
-import type { WorldState } from './WorldState'
+import type { WorldState } from './types'
 import { markDirtyTile } from './WorldState'
-
-const UINT32_MAX = 4294967295
-
-function hash(seed: number, a: number, b: number): number {
-  let h = Math.imul(seed | 0, 0x9e3779b1)
-  h ^= Math.imul(a | 0, 0x85ebca6b)
-  h ^= Math.imul(b | 0, 0xc2b2ae35)
-  h ^= h >>> 16
-  h = Math.imul(h, 0x7feb352d)
-  h ^= h >>> 15
-  h = Math.imul(h, 0x846ca68b)
-  h ^= h >>> 16
-  return (h >>> 0) / UINT32_MAX
-}
-
-function clampByte(value: number): number {
-  if (value < 0) return 0
-  if (value > 255) return 255
-  return value | 0
-}
 
 /**
  * Updater ecologico:
@@ -70,7 +51,7 @@ export class EnvironmentUpdater {
       const temp = world.temperature[idx] ?? 0
       const fertility = world.fertility[idx] ?? 0
       const hazard = world.hazard[idx] ?? 0
-      const roll = (hash(this.seed ^ tick, idx, tile) * 0.65) + rng.nextFloat() * 0.35
+      const roll = hash2D(this.seed ^ tick, idx, tile) * 0.65 + rng.nextFloat() * 0.35
 
       // Lava -> Rock dopo raffreddamento.
       if (tile === TileId.Lava && hazard < 80) {

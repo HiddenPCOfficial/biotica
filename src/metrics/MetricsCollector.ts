@@ -1,5 +1,5 @@
-import type { SpeciesStat } from '../creatures/types'
-import type { WorldState } from '../world/WorldState'
+import type { SpeciesStat } from '../sim/types'
+import type { WorldState } from '../world/types'
 
 export type MetricSample = {
   tick: number

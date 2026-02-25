@@ -1,5 +1,5 @@
 import type { RainStormEvent } from '../EventTypes'
-import type { WorldState } from '../../world/WorldState'
+import type { WorldState } from '../../world/types'
 import { clampByte, processEllipseBatch, randomSigned } from './eventUtils'
 
 type RainStormCreateParams = {

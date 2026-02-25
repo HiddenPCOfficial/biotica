@@ -1,6 +1,8 @@
 import type { StateScene } from '../core/GameStateMachine'
+import { StructureUiAdapter } from '../ui/data/StructureUiAdapter'
 import { SettingsPage } from '../ui/menu/pages/SettingsPage'
 import { MainMenuPage } from '../ui/menu/pages/MainMenuPage'
+import { StructuresPage } from '../ui/menu/pages/StructuresPage'
 import { MenuRoot } from '../ui/menu/MenuRoot'
 import type { SceneRuntimeContext } from './types'
 
@@ -49,6 +51,9 @@ export class MainMenuScene implements StateScene {
       onLoadWorld: () => {
         void this.ctx.navigate('worldLoad', { worldLoad: { sort: 'updatedDesc' } })
       },
+      onStructures: () => {
+        void this.showStructuresPage()
+      },
       onSettings: () => {
         this.showSettingsPage()
       },
@@ -73,6 +78,65 @@ export class MainMenuScene implements StateScene {
     })
 
     this.swapPage(page)
+  }
+
+  private async showStructuresPage(): Promise<void> {
+    const loading = new StructuresPage({
+      title: 'Structures',
+      subtitle: 'Loading structure catalog preview...',
+      adapter: null,
+      emptyMessage: 'No structure catalog available in this context.',
+      actions: {
+        onBack: () => this.showMainPage(),
+      },
+    })
+    this.swapPage(loading)
+
+    let preview: { adapter: StructureUiAdapter; subtitle: string } | null = null
+    try {
+      preview = await this.loadLatestStructureCatalogPreview()
+    } catch {
+      preview = null
+    }
+    if (this.page !== loading) {
+      return
+    }
+
+    if (!preview) {
+      loading.setAdapter(
+        null,
+        'No active world preview. Create or load a world to inspect structures.',
+      )
+      return
+    }
+
+    loading.setAdapter(preview.adapter, preview.subtitle)
+  }
+
+  private async loadLatestStructureCatalogPreview(): Promise<{
+    adapter: StructureUiAdapter
+    subtitle: string
+  } | null> {
+    const saves = await this.ctx.saveManager.listWorlds('updatedDesc')
+    const latest = saves[0]
+    if (!latest) {
+      return null
+    }
+
+    const fullRecord = await this.ctx.saveManager.loadWorld(latest.id)
+    if (!fullRecord) {
+      return null
+    }
+
+    const adapter = StructureUiAdapter.fromUnknown(fullRecord.systems)
+    if (!adapter) {
+      return null
+    }
+
+    return {
+      adapter,
+      subtitle: `Preview from save: ${fullRecord.name} • slot ${fullRecord.slotId}`,
+    }
   }
 
   private swapPage(next: MenuPage): void {

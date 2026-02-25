@@ -536,7 +536,7 @@ export class StructureUiAdapter {
       return {
         x: row.x,
         y: row.y,
-        reasonCodes: ['REUSE_EXISTING_PATTERN', 'MINIMIZE_LOGISTICS_COST'],
+        reasonCodes: ['GENE_REUSE_EXISTING_PATTERN', 'GENE_MINIMIZE_LOGISTICS_COST'],
         summary: `Existing ${def.name} near (${row.x}, ${row.y}) is a strong expansion anchor.`,
       }
     }
@@ -547,14 +547,36 @@ export class StructureUiAdapter {
     }
 
     const h = hashString(defId)
-    const x = Math.max(0, Math.min(size.width - 1, (h % size.width) | 0))
-    const y = Math.max(0, Math.min(size.height - 1, ((h >>> 8) % size.height) | 0))
+    let x = Math.max(0, Math.min(size.width - 1, (h % size.width) | 0))
+    let y = Math.max(0, Math.min(size.height - 1, ((h >>> 8) % size.height) | 0))
+    let reasonCodes = ['GENE_DETERMINISTIC_SITE_SELECTION', 'GENE_BALANCED_SPATIAL_DISTRIBUTION']
+    let summary = `Deterministic suggestion for ${def.name}: tile (${x}, ${y}).`
+
+    if (def.utilityTags.includes('defense')) {
+      const edge = h % 4
+      if (edge === 0) y = 1
+      if (edge === 1) x = Math.max(0, size.width - 2)
+      if (edge === 2) y = Math.max(0, size.height - 2)
+      if (edge === 3) x = 1
+      reasonCodes = ['GENE_DEFENSE_PERIMETER', 'GENE_CHOKEPOINT_CONTROL']
+      summary = `Defensive placement heuristic for ${def.name}: perimeter tile (${x}, ${y}).`
+    } else if (def.utilityTags.includes('farming')) {
+      x = Math.max(1, Math.min(size.width - 2, ((h >>> 4) % Math.max(2, size.width - 2)) | 0))
+      y = Math.max(1, Math.min(size.height - 2, ((h >>> 12) % Math.max(2, size.height - 2)) | 0))
+      reasonCodes = ['GENE_FOOD_STABILITY', 'GENE_INNER_REGION_SAFETY']
+      summary = `Food-stability heuristic for ${def.name}: inner-region tile (${x}, ${y}).`
+    } else if (def.utilityTags.includes('storage') || def.utilityTags.includes('crafting')) {
+      x = Math.max(0, Math.min(size.width - 1, Math.floor(size.width * 0.5 + ((h & 7) - 3))))
+      y = Math.max(0, Math.min(size.height - 1, Math.floor(size.height * 0.5 + (((h >>> 3) & 7) - 3))))
+      reasonCodes = ['GENE_LOGISTICS_CENTRALITY', 'GENE_TRAVEL_COST_REDUCTION']
+      summary = `Logistic-centrality heuristic for ${def.name}: hub tile (${x}, ${y}).`
+    }
 
     return {
       x,
       y,
-      reasonCodes: ['DETERMINISTIC_SITE_SELECTION', 'BALANCED_SPATIAL_DISTRIBUTION'],
-      summary: `Deterministic suggestion for ${def.name}: tile (${x}, ${y}).`,
+      reasonCodes,
+      summary,
     }
   }
 

@@ -1,5 +1,5 @@
 import type { AreaEvent } from '../EventTypes'
-import type { WorldState } from '../../world/WorldState'
+import type { WorldState } from '../../world/types'
 import { isInsideWorld, markDirtyTile, worldIndex } from '../../world/WorldState'
 
 const UINT32_MAX = 4294967295

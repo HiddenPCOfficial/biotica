@@ -3,7 +3,7 @@ import { readAiCoreConfig } from '../../core/AiConfig'
 import { resolveLlmModel } from '../../core/AiModelResolver'
 import { AiRateLimiter } from '../../core/AiRateLimiter'
 import { LlmClient, type LlmMessage } from '../LlmClient'
-import type { Creature, Species } from '../../../creatures/types'
+import type { Creature, Species } from '../../../sim/types'
 
 type DescriptionContext = {
   biomeName?: string

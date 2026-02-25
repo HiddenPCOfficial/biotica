@@ -1,6 +1,8 @@
 import { TileId } from '../game/enums/TileId'
 import type { MaterialCatalog } from '../materials/MaterialCatalog'
-import type { WorldState } from '../world/WorldState'
+import { clamp, hash2D } from '../shared/math'
+import { isLandTile } from '../world/Biomes'
+import type { WorldState } from '../world/types'
 
 export type ToolTag = 'axe' | 'pickaxe' | 'hammer' | 'shovel'
 
@@ -62,30 +64,8 @@ export type ResourceNodeGenerationOptions = {
   treeDensityMultiplier?: number
 }
 
-function clamp(value: number, min: number, max: number): number {
-  if (value < min) return min
-  if (value > max) return max
-  return value
-}
-
-function hash2D(seed: number, x: number, y: number): number {
-  let h = Math.imul(seed | 0, 0x9e3779b1)
-  h ^= Math.imul(x | 0, 0x85ebca6b)
-  h ^= Math.imul(y | 0, 0xc2b2ae35)
-  h ^= h >>> 16
-  h = Math.imul(h, 0x7feb352d)
-  h ^= h >>> 15
-  h = Math.imul(h, 0x846ca68b)
-  h ^= h >>> 16
-  return (h >>> 0) / 4294967295
-}
-
 function tileKey(x: number, y: number): string {
   return `${x}:${y}`
-}
-
-function isLandTile(tile: TileId): boolean {
-  return tile !== TileId.DeepWater && tile !== TileId.ShallowWater && tile !== TileId.Lava
 }
 
 function isForestLike(tile: TileId): boolean {

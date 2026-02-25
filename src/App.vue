@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { Game } from './game/Game'
+import { Game } from './core/Game'
 
 const gameHost = ref<HTMLElement | null>(null)
 const game = new Game()

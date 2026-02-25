@@ -3,14 +3,10 @@ import {
   createVolcanoEruptionEvent,
   stepVolcanoEruption,
 } from '../events/events/VolcanoEruption'
-import type { RecentEventEntry, WorldState } from './WorldState'
+import { clampInt, hash2D } from '../shared/math'
+import { DEFAULT_WORLD_RUNTIME_CONFIG, type VolcanoRuntimeConfig } from './WorldConfig'
+import type { RecentEventEntry, WorldState } from './types'
 import { markDirtyTile, pushRecentEvent, worldIndex } from './WorldState'
-
-export type VolcanoRuntimeConfig = {
-  minIntervalTicks: number
-  maxIntervalTicks: number
-  maxLavaTiles: number
-}
 
 export type VolcanoSystemState = {
   config: VolcanoRuntimeConfig
@@ -22,28 +18,9 @@ export type VolcanoSystemState = {
 }
 
 const DEFAULT_CONFIG: VolcanoRuntimeConfig = {
-  minIntervalTicks: 8000,
-  maxIntervalTicks: 16000,
-  maxLavaTiles: 180,
-}
-
-function clampInt(value: number, min: number, max: number): number {
-  const n = Math.floor(value)
-  if (n < min) return min
-  if (n > max) return max
-  return n
-}
-
-function hash3(seed: number, a: number, b: number): number {
-  let h = Math.imul(seed | 0, 0x9e3779b1)
-  h ^= Math.imul(a | 0, 0x85ebca6b)
-  h ^= Math.imul(b | 0, 0xc2b2ae35)
-  h ^= h >>> 16
-  h = Math.imul(h, 0x7feb352d)
-  h ^= h >>> 15
-  h = Math.imul(h, 0x846ca68b)
-  h ^= h >>> 16
-  return (h >>> 0) / 4294967295
+  minIntervalTicks: DEFAULT_WORLD_RUNTIME_CONFIG.volcano.minIntervalTicks,
+  maxIntervalTicks: DEFAULT_WORLD_RUNTIME_CONFIG.volcano.maxIntervalTicks,
+  maxLavaTiles: DEFAULT_WORLD_RUNTIME_CONFIG.volcano.maxLavaTiles,
 }
 
 /**
@@ -101,8 +78,8 @@ export class VolcanoSystem {
 
     if (!this.activeEvent && tick >= this.nextEruptionTick) {
       const id = `VolcanoEruption-${this.seed}-${++this.eruptionCounter}`
-      const eruptionTicks = 65 + Math.floor(hash3(this.seed ^ 0xabcd9911, this.eruptionCounter, tick) * 65)
-      const coolingTicks = 140 + Math.floor(hash3(this.seed ^ 0x22ff3197, this.eruptionCounter, tick) * 110)
+      const eruptionTicks = 65 + Math.floor(hash2D(this.seed ^ 0xabcd9911, this.eruptionCounter, tick) * 65)
+      const coolingTicks = 140 + Math.floor(hash2D(this.seed ^ 0x22ff3197, this.eruptionCounter, tick) * 110)
 
       this.activeEvent = createVolcanoEruptionEvent({
         id,
@@ -210,7 +187,7 @@ export class VolcanoSystem {
     if (span <= 0) {
       return this.config.minIntervalTicks
     }
-    const roll = hash3(this.seed ^ 0x9182ab11, this.cycle + 1, this.eruptionCounter + 3)
+    const roll = hash2D(this.seed ^ 0x9182ab11, this.cycle + 1, this.eruptionCounter + 3)
     return this.config.minIntervalTicks + Math.floor(roll * (span + 1))
   }
 
@@ -239,3 +216,5 @@ export class VolcanoSystem {
     }
   }
 }
+
+export type { VolcanoRuntimeConfig }
